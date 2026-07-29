@@ -1,0 +1,19 @@
+{
+  "name": "Flip 7",
+  "short_name": "Flip 7",
+  "description": "Play Flip 7 against the house bots, or tap the cards you were dealt to score a real game.",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0918",
+  "theme_color": "#0a0918",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
