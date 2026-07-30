@@ -56,6 +56,34 @@ Deploying needs you to be logged in (`npx firebase login`) and the target
 project named in `.firebaserc`, which is set to `flip7-46611`. Change it if
 that's the wrong project.
 
+## Deploying from GitHub instead
+
+`firebase login` opens a browser, so it can't run on a phone or in a sandbox.
+`.github/workflows/deploy.yml` moves the deploy to GitHub: the credential lives
+in repository secrets, and you trigger it from the Actions tab. No terminal, and
+nothing sensitive passes through a chat window.
+
+Set up once:
+
+1. **Make a service account.** Google Cloud console → IAM & Admin → Service
+   Accounts → Create. Grant it **Firebase Hosting Admin** and **Firebase
+   Realtime Database Admin**. Then Keys → Add key → JSON, and download it.
+2. **Add it as a secret.** GitHub repo → Settings → Secrets and variables →
+   Actions → New repository secret, named `FIREBASE_SERVICE_ACCOUNT`. Paste the
+   whole JSON file as the value.
+3. **Add the web config as a secret** named `FIREBASE_WEB_CONFIG`, pasting the
+   snippet from the Firebase console (the same one `set-config` takes). This
+   isn't secret information — it just saves editing a file. Skip it and the
+   workflow deploys single-phone mode and warns you.
+
+Then: **Actions → Deploy to Firebase → Run workflow.** It also runs on every
+push to `main`.
+
+The workflow deploys to whichever project the service account belongs to, read
+from the key's own `project_id`, so the deploy target can't drift away from the
+credential that authorises it. Tests run first — a broken scorekeeper is worse
+than an old one.
+
 A web Firebase config is public by design; it isn't a secret. `database.rules.json`
 is what actually controls access. Those rules let anyone who knows a room's
 four-character code read and write that room, and nothing else — the same trust

@@ -1,0 +1,102 @@
+name: Deploy to Firebase
+
+# Deploying needs a Google login, which can't happen in a sandbox or from a
+# phone. GitHub can hold the credential instead: it lives in repository secrets,
+# and this workflow does the deploy. Run it from the Actions tab — no terminal.
+#
+# One-time setup is in README.md under "Deploying from GitHub".
+
+on:
+  workflow_dispatch:
+    inputs:
+      online:
+        description: 'Deploy database rules too (needs FIREBASE_WEB_CONFIG)'
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+
+concurrency:
+  group: firebase-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # A broken scorekeeper is worse than an old one, so gate the deploy.
+      - name: Test
+        run: npm test
+
+      # The web config isn't a secret, but keeping it here means nobody has to
+      # edit a file to get online rooms working.
+      - name: Apply Firebase web config
+        if: ${{ secrets.FIREBASE_WEB_CONFIG != '' }}
+        env:
+          WEB_CONFIG: ${{ secrets.FIREBASE_WEB_CONFIG }}
+        run: printf '%s' "$WEB_CONFIG" | node scripts/set-config.mjs
+
+      - name: Check what this deploy will actually do
+        id: mode
+        run: |
+          if node scripts/check-config.mjs; then
+            echo "targets=database,hosting" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No Firebase config, so this deploys single-phone scoring only. Add the FIREBASE_WEB_CONFIG secret to enable online rooms."
+            echo "targets=hosting" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Authenticate
+        env:
+          SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$SERVICE_ACCOUNT" ]; then
+            echo "::error::Missing the FIREBASE_SERVICE_ACCOUNT secret. See README.md → Deploying from GitHub."
+            exit 1
+          fi
+          printf '%s' "$SERVICE_ACCOUNT" > "$RUNNER_TEMP/service-account.json"
+          # Deploy to whichever project the credential belongs to, so the target
+          # can never drift away from the key that authorises it.
+          node -e "
+            const fs = require('node:fs');
+            const sa = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/service-account.json', 'utf8'));
+            if (!sa.project_id) throw new Error('Service account JSON has no project_id');
+            fs.appendFileSync(process.env.GITHUB_ENV, 'FIREBASE_PROJECT=' + sa.project_id + '\n');
+          "
+
+      - name: Deploy
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/service-account.json
+        run: |
+          npx firebase deploy \
+            --only "${{ steps.mode.outputs.targets }}" \
+            --project "$FIREBASE_PROJECT" \
+            --non-interactive
+
+      - name: Remove the credential from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/service-account.json"
+
+      - name: Summary
+        if: success()
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- Project: \`$FIREBASE_PROJECT\`"
+            echo "- Targets: \`${{ steps.mode.outputs.targets }}\`"
+            echo "- Live at: https://$FIREBASE_PROJECT.web.app"
+            if [ "${{ steps.mode.outputs.targets }}" = "hosting" ]; then
+              echo ""
+              echo "Single-phone scoring only — add \`FIREBASE_WEB_CONFIG\` for online rooms."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
