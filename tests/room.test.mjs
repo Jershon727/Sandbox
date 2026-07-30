@@ -280,6 +280,7 @@ test('a rematch keeps the players and wipes the scores', () => {
   assert.equal(paths.round, 1);
   assert.equal(paths.status, 'playing');
   assert.equal(paths.winnerId, null);
+  assert.equal(paths.lastRound, null, 'otherwise the old summary reopens');
   assert.equal(paths['players/a/total'], 0);
   assert.deepEqual(paths['players/a/history'], []);
   assert.equal(paths['players/b/total'], 0);

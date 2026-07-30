@@ -247,6 +247,75 @@ check(
 );
 check('only the host is offered a rematch', await guest.locator('#btn-rematch').isHidden());
 
+// ── bust odds and the recommendation ─────────────────────────────────────
+// The game just finished, so clear it down to a fresh round first.
+await host.click('#btn-rematch');
+await guest.evaluate(() => document.querySelector('#modal-over')?.setAttribute('hidden', ''));
+await host.waitForFunction(() => window.__flip7.store.state.round === 1, null, { timeout: 5000 });
+await host.waitForTimeout(200);
+
+// Empty hand: nothing can bust you.
+check(
+  'an empty hand shows no risk and says hit',
+  (await host.textContent('#advice-pct')) === '0%' &&
+    (await host.textContent('#advice-rec')) === 'Hit',
+  `${await host.textContent('#advice-pct')} / ${await host.textContent('#advice-rec')}`,
+);
+
+// A fat hand of high cards should be worth protecting.
+for (const n of [12, 11, 10, 9, 8, 7]) await tap(host, `Add a ${n}`);
+const bigRisk = Number((await host.textContent('#advice-pct')).replace('%', ''));
+check('a fat hand shows real risk', bigRisk > 30, `${bigRisk}%`);
+check(
+  'and the recommendation is to stay',
+  (await host.textContent('#advice-rec')).startsWith('Stay'),
+  await host.textContent('#advice-rec'),
+);
+
+// The reasoning is there when asked for, and quotes real counts.
+check('the reasoning starts folded away', await host.locator('#advice-why').isHidden());
+await host.click('#advice-row');
+check('tapping opens it', await host.locator('#advice-why').isVisible());
+const why = await host.textContent('#advice-reason');
+check('it names how many cards would bust you', /\d+ of the \d+ unseen cards/.test(why), why);
+check('and is honest about what it cannot see', /Freeze and Flip Three/.test(await host.textContent('#advice-why')));
+
+// A Second Chance removes the risk entirely.
+await host.click('#pad button[aria-label="Second Chance"]');
+await host.waitForTimeout(120);
+check(
+  'a Second Chance drops the risk to zero and flips the call to hit',
+  (await host.textContent('#advice-pct')) === '0%' &&
+    (await host.textContent('#advice-rec')) === 'Hit',
+  `${await host.textContent('#advice-pct')} / ${await host.textContent('#advice-rec')}`,
+);
+
+// Cards on the table reduce your risk: the guest showing 12s helps the host.
+await host.click('#pad button[aria-label="Second Chance"]');
+await host.waitForTimeout(120);
+const before = Number((await host.textContent('#advice-pct')).replace('%', ''));
+await guest.click('#btn-clear');
+for (let i = 0; i < 1; i++) await tap(guest, 'Add a 12');
+await host.waitForTimeout(400);
+const after = Number((await host.textContent('#advice-pct')).replace('%', ''));
+check(
+  "another player's 12 lowers the host's risk",
+  after <= before,
+  `${before}% → ${after}%`,
+);
+
+// It can be turned off.
+await host.click('[data-open="menu"]');
+await host.click('#modal-menu [data-open="settings"]');
+await host.waitForTimeout(150);
+await host.evaluate(() => {
+  const rows = [...document.querySelectorAll('#settings-opts .opt')];
+  rows.find((r) => r.textContent.includes('Bust odds'))?.querySelector('.switch')?.click();
+});
+await host.evaluate(() => document.querySelector('#modal-settings').setAttribute('hidden', ''));
+await host.waitForTimeout(150);
+check('it can be switched off', await host.locator('#advice').isHidden());
+
 await browser.close();
 
 console.log(results.join('\n'));

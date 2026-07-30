@@ -162,6 +162,37 @@ ends a round, so the whole table banks on the same beat.
 Rejoining uses your name: come back after a crash with the same name and you get
 your seat and your score back rather than a duplicate row.
 
+## Bust odds and the recommendation
+
+Under your hand the app shows how likely the next card is to bust you, and
+whether it thinks you should hit or stay. Tap the row for the reasoning:
+
+> 21 of the 78 unseen cards would bust you (27%). Risking 60 points is not worth
+> the average gain.
+
+This isn't insider knowledge. Every card in Flip 7 is dealt face up, so the app
+is doing arithmetic anyone at the table could do with a good memory — it counts
+the full 94-card deck, subtracts everything currently showing, and divides.
+
+The recommendation is expected value over one more card. For each unseen card it
+weighs what that card would do: a duplicate costs you the whole round (unless a
+Second Chance covers it), a new number pays its face value, doubled if you hold
+`×2`, plus 15 if it completes a Flip 7. If the average outcome is positive it
+says hit. It looks one card ahead deliberately, because that's the decision in
+front of you and you get to ask again afterwards. It also recognises a hand that
+already wins the game and tells you to bank it.
+
+**What it can't see**, stated in the panel rather than buried here:
+
+- Cards dealt in earlier rounds. It assumes each round starts from a full deck,
+  which is exactly right for round one and drifts optimistic after that.
+- Freeze and Flip Three cards, which nobody taps because they don't score. Six
+  cards that may already be gone still count as available.
+
+Both errors point the same way — real risk is a little higher than shown — so
+treat it as a guide, not a guarantee. Turn it off in Settings if you'd rather
+play on instinct.
+
 ## The rules it implements
 
 94 cards: one 0, one 1, two 2s, up to twelve 12s (79 number cards), five `+`

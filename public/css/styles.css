@@ -1351,6 +1351,144 @@ input {
 }
 
 
+/* ── the odds and the recommendation ──────────────────────────────────────
+   Every card in Flip 7 is dealt face up, so this is arithmetic over public
+   information. It reads as a quiet instrument rather than a nag: colour carries
+   the risk, and the reasoning stays folded away until asked for. */
+
+.advice {
+  --risk-c: var(--ok);
+  margin-top: 9px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.advice[data-band='ok'] {
+  --risk-c: #a3e635;
+}
+.advice[data-band='warm'] {
+  --risk-c: var(--warm);
+}
+.advice[data-band='hot'] {
+  --risk-c: var(--hot);
+}
+
+.advice__row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 2px;
+  text-align: left;
+  border-radius: 11px;
+  transition: background 0.18s var(--ease);
+}
+
+.advice__row:active {
+  background: var(--surface);
+}
+
+/* a dial that fills with the risk — quicker to read than the number */
+.advice__dial {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  position: relative;
+  background: conic-gradient(var(--risk-c) calc(var(--pct, 0) * 1%), var(--surface-2) 0);
+}
+
+.advice__dial::after {
+  content: '';
+  position: absolute;
+  inset: 4px;
+  border-radius: 50%;
+  background: var(--surface-solid);
+}
+
+.advice__risk {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.05;
+}
+
+.advice__risk b {
+  font-size: 0.98rem;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: var(--risk-c);
+}
+
+.advice__risk small {
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.advice__says {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  line-height: 1.05;
+}
+
+.advice__says small {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.advice__rec {
+  max-width: 100%;
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.advice[data-move='hit'] .advice__rec {
+  color: var(--mint);
+}
+
+.advice[data-move='stay'] .advice__rec {
+  color: var(--gold);
+}
+
+.advice__caret {
+  flex: none;
+  font-size: 0.7rem;
+  color: var(--ink-3);
+  transition: transform 0.2s var(--ease);
+}
+
+.advice__row[aria-expanded='true'] .advice__caret {
+  transform: rotate(180deg);
+}
+
+.advice__why {
+  padding: 4px 2px 2px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--ink-2);
+  animation: slideUp 0.22s var(--ease-out) both;
+}
+
+.advice__caveat {
+  margin-top: 6px;
+  font-size: 0.74rem;
+  color: var(--ink-3);
+}
+
 /* ── code entry & join ─────────────────────────────────────────────────── */
 
 .input--code {

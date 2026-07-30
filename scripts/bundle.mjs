@@ -24,6 +24,7 @@ const MODULES = [
   'scoring.js',
   'cards.js',
   'room.js',
+  'odds.js',
   'storage.js',
   'views.js',
   'sound.js',

@@ -29,6 +29,7 @@ function write(key, value) {
 const DEFAULT_SETTINGS = {
   sound: true,
   effects: true,
+  advice: true, // bust odds and the hit-or-stay suggestion
   speed: 'normal', // chill | normal | fast
   theme: 'auto', // auto follows the OS until someone picks a side
 };

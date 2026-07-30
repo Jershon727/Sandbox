@@ -6,7 +6,7 @@
  * quietly refresh it in the background.
  */
 
-const CACHE = 'flip7-v2';
+const CACHE = 'flip7-v3';
 
 const SHELL = [
   '.',
@@ -17,6 +17,7 @@ const SHELL = [
   'firebase-config.js',
   'js/main.js',
   'js/room.js',
+  'js/odds.js',
   'js/store.js',
   'js/sync-local.js',
   'js/scorer.js',

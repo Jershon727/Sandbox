@@ -213,7 +213,9 @@ export function endRoundUpdates(room) {
 
 /** Clear the scores but keep the room and everyone in it. */
 export function rematchUpdates(room) {
-  const paths = { round: 1, status: 'playing', winnerId: null };
+  // lastRound has to go too, or every phone reopens the old summary the moment
+  // the new game starts.
+  const paths = { round: 1, status: 'playing', winnerId: null, lastRound: null };
   for (const p of playerList(room)) {
     paths[`players/${p.id}/total`] = 0;
     paths[`players/${p.id}/history`] = [];

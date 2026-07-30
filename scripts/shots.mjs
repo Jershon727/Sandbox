@@ -74,6 +74,12 @@ await host.evaluate(async () => {
 await host.waitForTimeout(350);
 await shot(host, '03-room-live');
 
+// The odds panel, opened to show the reasoning.
+await host.click('#advice-row');
+await host.waitForTimeout(250);
+await shot(host, '03b-advice');
+await host.click('#advice-row');
+
 // The join screen on a second phone.
 const guest = await context.newPage();
 guard(guest, 'guest');

@@ -248,6 +248,28 @@
             <span class="readout__score" id="round-score">0</span>
             <span class="readout__formula" id="formula">Tap the cards you were dealt</span>
           </div>
+
+          <div class="advice" id="advice" hidden>
+            <button class="advice__row" id="advice-row" aria-expanded="false" aria-controls="advice-why">
+              <span class="advice__dial" id="advice-dial" aria-hidden="true"></span>
+              <span class="advice__risk">
+                <b id="advice-pct">0%</b>
+                <small>bust risk</small>
+              </span>
+              <span class="advice__says">
+                <small>Claude recommends</small>
+                <b class="advice__rec" id="advice-rec">Hit</b>
+              </span>
+              <span class="advice__caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="advice__why" id="advice-why" hidden>
+              <p id="advice-reason"></p>
+              <p class="advice__caveat">
+                Counted from a full 94-card deck minus everything tapped this round. It can't see
+                earlier rounds, or Freeze and Flip Three cards, so treat it as a guide.
+              </p>
+            </div>
+          </div>
         </div>
 
         <div class="pad" id="pad"></div>

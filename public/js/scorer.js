@@ -19,9 +19,11 @@ import {
   isAway,
   roundLooksDone,
 } from './room.js';
+import { advise } from './odds.js';
 import { toast, showBanner } from './views.js';
 import { sfx } from './sound.js';
 import { burstFrom } from './fx.js';
+import { settings } from './storage.js';
 
 const MOD_KEYS = [
   { op: 'add', value: 2 },
@@ -58,11 +60,25 @@ export class Scorer {
       clear: id('btn-clear'),
       end: id('btn-end-round'),
       waiting: id('waiting'),
+      advice: id('advice'),
+      adviceRow: id('advice-row'),
+      adviceDial: id('advice-dial'),
+      advicePct: id('advice-pct'),
+      adviceRec: id('advice-rec'),
+      adviceWhy: id('advice-why'),
+      adviceReason: id('advice-reason'),
     };
 
     this.buildPad();
     this.el.undo.addEventListener('click', () => this.undo());
     this.el.clear.addEventListener('click', () => this.clearHand());
+
+    this.el.adviceRow.addEventListener('click', () => {
+      const open = this.el.adviceWhy.hidden;
+      this.el.adviceWhy.hidden = !open;
+      this.el.adviceRow.setAttribute('aria-expanded', String(open));
+      sfx.tap();
+    });
   }
 
   // ── whose hand am I editing ─────────────────────────────────────────────
@@ -294,6 +310,7 @@ export class Scorer {
     this.el.score.classList.toggle('is-zero', score === 0);
     this.el.formula.textContent = formula(shape);
     this.renderPadState(hand);
+    this.renderAdvice(t);
 
     // Only the host ends the round, so the whole table banks on the same beat.
     const host = this.store.isHost;
@@ -302,6 +319,43 @@ export class Scorer {
     if (host) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
 
     this.announceFlip7();
+  }
+
+  /**
+   * The bust odds and the recommendation.
+   *
+   * Every card in Flip 7 is dealt face up, so this is arithmetic over public
+   * information — it isn't telling you anything you couldn't count yourself.
+   */
+  renderAdvice(target) {
+    const el = this.el;
+    if (!settings.advice || !target) {
+      el.advice.hidden = true;
+      return;
+    }
+
+    const a = advise(this.store.state, target.id);
+    if (!a || a.move === 'none') {
+      // Nothing to decide once the hand is busted or already at seven.
+      el.advice.hidden = true;
+      return;
+    }
+
+    el.advice.hidden = false;
+    el.advice.dataset.band = a.band;
+    el.advice.dataset.move = a.move;
+
+    const pct = Math.round(a.risk * 100);
+    el.advicePct.textContent = `${pct}%`;
+    el.adviceDial.style.setProperty('--pct', String(Math.min(100, pct)));
+    el.adviceRec.textContent = a.headline;
+    el.adviceReason.textContent = a.why;
+
+    const whose = target.id === this.store.myId ? 'You' : target.name;
+    el.adviceRow.setAttribute(
+      'aria-label',
+      `${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
+    );
   }
 
   /** A Flip 7 anywhere on the table ends the round, so everyone should know. */
