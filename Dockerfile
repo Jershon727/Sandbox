@@ -16,14 +16,17 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# room.js is imported by the relay for its merge semantics, so the server and
-# the browsers can't disagree about what an update means.
+# The relay serves the app as well as syncing it, so one deploy gets you both —
+# and the page then shares an origin with its relay, so nothing has to be told
+# the deploy's domain. room.js is also imported by the server itself, for the
+# merge semantics, so the server and the browsers can't disagree about what an
+# update means.
 COPY server ./server
-COPY public/js/room.js ./public/js/room.js
-COPY public/js/scoring.js ./public/js/scoring.js
+COPY public ./public
 
 ENV NODE_ENV=production
 ENV PORT=8787
+ENV SERVE_STATIC=/app/public
 
 # Rooms are saved here so a restart doesn't end everyone's game. Mount a volume
 # at /data to keep them across redeploys too.

@@ -143,11 +143,12 @@ export class Store {
     if (Store.singleFile) return null;
 
     try {
-      const [{ hasRelayConfig }, config] = await Promise.all([
+      const [{ hasRelayConfig, probeRelay }, config] = await Promise.all([
         import('./sync-relay.js'),
         import('../relay-config.js'),
       ]);
-      if (hasRelayConfig(config)) return 'relay';
+      // Configured *and* answering. See probeRelay for why both are needed.
+      if (hasRelayConfig(config) && (await probeRelay(config))) return 'relay';
     } catch {
       /* no relay module or config — try Firebase */
     }

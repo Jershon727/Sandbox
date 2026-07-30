@@ -18,4 +18,14 @@
  *   localStorage.setItem('flip7:relay', 'wss://my-relay.example')
  */
 
-export const relayUrl = '';
+/**
+ * 'same-origin' works out of the box when the relay is also serving the app —
+ * which is what the Dockerfile and railway.json set up. The app checks that a
+ * relay is really answering before offering online rooms, so this is harmless on
+ * a host that only serves static files: it quietly falls back to single-phone
+ * mode there.
+ *
+ * Point it somewhere explicit if the app and the relay live apart:
+ *   export const relayUrl = 'wss://flip7-relay.up.railway.app';
+ */
+export const relayUrl = 'same-origin';

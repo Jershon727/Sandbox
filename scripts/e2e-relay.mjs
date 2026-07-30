@@ -5,7 +5,9 @@
  * localStorage. Here each phone gets its own context with nothing in common, so
  * the only thing that can be carrying state between them is the relay.
  *
- * Starts its own relay and its own static server, so it needs nothing running.
+ * This runs the production shape: one relay process serving the app *and* the
+ * WebSockets on one origin, with the client discovering it via 'same-origin' —
+ * exactly what the Dockerfile and railway.json deploy.
  *
  *   node scripts/e2e-relay.mjs
  */
@@ -15,9 +17,8 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 
 const RELAY_PORT = Number(process.env.RELAY_PORT ?? 8899);
-const WEB_PORT = Number(process.env.WEB_PORT ?? 5199);
-const RELAY_URL = `ws://localhost:${RELAY_PORT}`;
-const BASE = `http://localhost:${WEB_PORT}`;
+// One origin for both, the way the container serves it.
+const BASE = `http://localhost:${RELAY_PORT}`;
 
 const results = [];
 let failed = 0;
@@ -75,18 +76,22 @@ async function waitFor(url, attempts = 40) {
 }
 
 await requireFree(RELAY_PORT);
-await requireFree(WEB_PORT);
 
-let relay = start('server/relay.mjs', { PORT: String(RELAY_PORT) });
-start('scripts/serve.mjs', { PORT: String(WEB_PORT) });
+const ROOM_STORE = `/tmp/flip7-e2e-rooms-${process.pid}.json`;
+const relayEnv = { PORT: String(RELAY_PORT), ROOM_STORE };
+let relay = start('server/relay.mjs', relayEnv);
 await waitFor(`http://localhost:${RELAY_PORT}/health`);
-await waitFor(BASE);
+
+check(
+  'the relay serves the app as well as the sockets',
+  (await fetch(BASE).then((r) => r.text())).includes('Bust-O-meter'),
+);
 
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
 const errors = [];
 
 /** A phone: its own context, its own storage, pointed at the relay. */
-async function phone(label) {
+async function phone(label, base = BASE) {
   const context = await browser.newContext({ viewport: { width: 414, height: 896 } });
   const page = await context.newPage();
   page.on('pageerror', (e) => errors.push(`${label}: ${e.message}`));
@@ -95,8 +100,9 @@ async function phone(label) {
       errors.push(`${label}: ${m.text()}`);
     }
   });
-  await page.addInitScript((url) => localStorage.setItem('flip7:relay', url), RELAY_URL);
-  await page.goto(BASE, { waitUntil: 'domcontentloaded' });
+  // 'same-origin' is what ships; nothing here is told the address.
+  await page.addInitScript(() => localStorage.setItem('flip7:relay', 'same-origin'));
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.waitForFunction(() => !!window.__flip7);
   return { context, page };
@@ -257,7 +263,7 @@ check('an unknown code says so instead of hanging', /No game found/i.test(joinEr
 // relay would be no better than making the host's phone the server.
 relay.kill('SIGTERM');
 await new Promise((r) => setTimeout(r, 700));
-relay = start('server/relay.mjs', { PORT: String(RELAY_PORT) });
+relay = start('server/relay.mjs', relayEnv);
 await waitFor(`http://localhost:${RELAY_PORT}/health`);
 check(
   'the restarted relay still has the room',
@@ -283,6 +289,17 @@ check(
   (await standing(sam.page, 'Sam'))?.round === '+19',
   JSON.stringify(await standing(sam.page, 'Sam')),
 );
+
+// A host with no relay behind it must not advertise online rooms.
+const staticOnly = start('scripts/serve.mjs', { PORT: '5211' });
+await waitFor('http://localhost:5211');
+const plain = await phone('static-only', 'http://localhost:5211');
+check(
+  'a static host with no relay falls back to single-phone mode',
+  (await plain.page.evaluate(() => window.__flip7.view.onlineKind)) === null,
+  String(await plain.page.evaluate(() => window.__flip7.view.onlineKind)),
+);
+staticOnly.kill();
 
 await browser.close();
 cleanup();

@@ -12,7 +12,8 @@
  */
 
 import { createServer } from 'node:http';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { readFile, writeFile, rename, stat } from 'node:fs/promises';
+import { extname, join, normalize } from 'node:path';
 import { WebSocketServer } from 'ws';
 
 import { applyPaths, normalizeCode, CODE_LENGTH } from '../public/js/room.js';
@@ -25,6 +26,24 @@ const PORT = Number(process.env.PORT ?? 8787);
  * run a relay at all. Set ROOM_STORE='' to disable.
  */
 const STORE = process.env.ROOM_STORE ?? new URL('../.rooms.json', import.meta.url).pathname;
+
+/**
+ * Optionally serve the app itself from this same process, so one deploy gets you
+ * both. That also means the page and its relay share an origin, and the client
+ * can find the relay without being told where it is — which matters when the
+ * only device you have is the phone you're playing on.
+ */
+const STATIC = process.env.SERVE_STATIC ?? new URL('../public/', import.meta.url).pathname;
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+};
 
 /** Guard rails, so one bad client can't sink the box. */
 const LIMITS = {
@@ -106,14 +125,40 @@ async function restore() {
 
 // ── http (health checks and a friendly root) ──────────────────────────────
 
-const http = createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size }));
+const http = createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://relay');
+
+  if (url.pathname === '/health') {
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify({ ok: true, relay: true, rooms: rooms.size }));
     return;
   }
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('Flip 7 relay. Connect a WebSocket with ?room=CODE.\n');
+
+  if (!STATIC) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Flip 7 relay. Connect a WebSocket with ?room=CODE.\n');
+    return;
+  }
+
+  try {
+    const safe = normalize(decodeURIComponent(url.pathname)).replace(/^(\.\.[/\\])+/, '');
+    let path = join(STATIC, safe);
+    const info = await stat(path).catch(() => null);
+    if (!info || info.isDirectory()) path = join(STATIC, 'index.html');
+    const body = await readFile(path);
+    res.writeHead(200, {
+      'Content-Type': MIME[extname(path)] ?? 'application/octet-stream',
+      // The app is small and changes when redeployed; don't cache the shell.
+      'Cache-Control': extname(path) === '.html' ? 'no-cache' : 'public, max-age=300',
+    });
+    res.end(body);
+  } catch {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+  }
 });
 
 // ── websockets ────────────────────────────────────────────────────────────
@@ -252,7 +297,11 @@ http.on('error', (err) => {
 await restore();
 
 http.listen(PORT, () => {
-  log(`Flip 7 relay listening on :${PORT}${STORE ? ` (rooms saved to ${STORE})` : ''}`);
+  log(
+    `Flip 7 relay listening on :${PORT}` +
+      `${STATIC ? ` · serving ${STATIC}` : ''}` +
+      `${STORE ? ` · rooms saved to ${STORE}` : ''}`,
+  );
 });
 
 for (const signal of ['SIGINT', 'SIGTERM']) {

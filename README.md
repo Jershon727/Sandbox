@@ -124,14 +124,39 @@ Then point a device at it without editing any files:
 localStorage.setItem('flip7:relay', 'ws://localhost:8787')
 ```
 
-To deploy, use the `Dockerfile` — Fly, Render, Railway or a VPS will all run it
-as-is, and it respects `PORT`. Then put the address in `public/relay-config.js`:
+### Deploying it (Railway, from a phone)
+
+The relay serves the app as well as syncing it, so **one deploy gets you both**,
+on one domain, and there's nothing to configure afterwards — `relay-config.js`
+ships as `'same-origin'`, meaning "wherever this page came from".
+
+Entirely in a browser:
+
+1. [railway.app](https://railway.app) → log in with GitHub.
+2. **New Project → Deploy from GitHub repo** → pick this repo. It builds the
+   `Dockerfile` (pinned in `railway.json`, so it can't accidentally run the dev
+   server instead).
+3. **Settings → Networking → Generate Domain.** That's your game's address.
+4. Optional but worth it: **Settings → Volumes → new volume, mount path `/data`**,
+   so rooms survive redeploys as well as restarts.
+
+Open the domain, tap **Start a game**, read the code out. Railway's domains are
+https, so the sockets are `wss://` automatically.
+
+Any other host works the same way — Fly, Render, a VPS — the image respects
+`PORT`. If you'd rather host the app somewhere else and the relay here, point
+`relay-config.js` at it explicitly:
 
 ```js
-export const relayUrl = 'wss://flip7-relay.fly.dev';
+export const relayUrl = 'wss://flip7-relay.up.railway.app';
 ```
 
 Use `wss://`, not `ws://`: a page served over https can't open a plain socket.
+
+The app checks that a relay is actually answering before it offers online rooms,
+so `'same-origin'` is safe on a host that only serves files — Firebase Hosting,
+say. There it quietly falls back to single-phone mode instead of offering rooms
+that can't connect.
 
 **Rooms survive a restart.** They're saved to `ROOM_STORE` (a JSON file, written
 atomically) and reloaded on boot, because hosting platforms restart containers and
@@ -155,7 +180,7 @@ npm install        # only needed for the browser-driven checks
 npm start          # → http://localhost:5173
 npm test           # scoring, room logic and the Bust-O-meter
 npm run test:e2e   # two phones in one room, in a real browser
-npm run test:relay # two separate devices over a real WebSocket relay
+npm run test:relay # two separate devices over a real relay, production shape
 npm run relay      # the relay on its own → ws://localhost:8787
 ```
 
@@ -220,9 +245,13 @@ That's also what makes the sync logic testable. `npm run test:e2e` runs two page
 through a shared room over a BroadcastChannel. `npm run test:relay` goes further:
 two *separate* browser contexts with nothing in common, talking over a real
 WebSocket relay it starts itself — so the only thing that can carry state between
-them is the network. It checks that a tap on one phone lands on the other, that
-the room outlives the host closing their phone, that a reload rejoins, and that
-killing and restarting the relay doesn't lose the game.
+them is the network. It runs the production shape — one relay process serving the app *and* the
+sockets, with the client finding it via `'same-origin'` — so it exercises what
+actually gets deployed. It checks that a tap on one phone lands on the other,
+that the room outlives the host closing their phone, that a reload rejoins, that
+killing and restarting the relay loses neither the game nor a tap made while it
+was down, and that a static host with no relay behind it falls back to
+single-phone mode rather than offering rooms that can't connect.
 
 ### Who can edit what
 

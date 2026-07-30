@@ -11,7 +11,13 @@
 
 const RETRY_MS = [500, 1000, 2000, 4000, 8000, 15000];
 
-/** Where the relay lives: the config file, or a per-device override. */
+/**
+ * Where the relay lives: the config file, or a per-device override.
+ *
+ * 'same-origin' means "wherever this page came from", which is what you want
+ * when the relay is also serving the app. It saves having to know the deploy's
+ * domain, and keeps working if that domain changes.
+ */
 export function relayUrlFrom(config) {
   let override = null;
   try {
@@ -19,13 +25,38 @@ export function relayUrlFrom(config) {
   } catch {
     /* storage blocked; the config file still applies */
   }
-  const url = (override || config?.relayUrl || '').trim();
-  return url && !url.startsWith('PASTE_') ? url : '';
+  const raw = (override || config?.relayUrl || '').trim();
+  if (!raw || raw.startsWith('PASTE_')) return '';
+  if (raw === 'same-origin') {
+    if (typeof location === 'undefined' || !location.host) return '';
+    return `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}`;
+  }
+  return raw;
 }
 
 export function hasRelayConfig(config) {
-  const url = relayUrlFrom(config);
-  return /^wss?:\/\/.+/.test(url);
+  return /^wss?:\/\/.+/.test(relayUrlFrom(config));
+}
+
+/**
+ * Is a relay actually there?
+ *
+ * Config alone isn't proof — 'same-origin' is true of any host, including one
+ * that only serves static files. Offering online rooms that then fail to connect
+ * is worse than not offering them, so ask first.
+ */
+export async function probeRelay(config, timeoutMs = 2500) {
+  const ws = relayUrlFrom(config);
+  if (!ws) return false;
+  const http = ws.replace(/^ws/, 'http');
+  try {
+    const res = await fetch(`${http}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    if (!res.ok) return false;
+    const body = await res.json();
+    return body?.relay === true;
+  } catch {
+    return false;
+  }
 }
 
 export async function createRelaySync(config) {
