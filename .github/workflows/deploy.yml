@@ -6,15 +6,14 @@ name: Deploy to Firebase
 #
 # One-time setup is in README.md under "Deploying from GitHub".
 
+# Manual only, on purpose: a deploy should be a decision, not a side effect of
+# pushing a work-in-progress branch. To deploy automatically once you have a
+# stable branch, add it here:
+#
+#   push:
+#     branches: [main]
 on:
   workflow_dispatch:
-    inputs:
-      online:
-        description: 'Deploy database rules too (needs FIREBASE_WEB_CONFIG)'
-        type: boolean
-        default: true
-  push:
-    branches: [main]
 
 concurrency:
   group: firebase-deploy

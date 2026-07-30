@@ -76,8 +76,12 @@ Set up once:
    isn't secret information — it just saves editing a file. Skip it and the
    workflow deploys single-phone mode and warns you.
 
-Then: **Actions → Deploy to Firebase → Run workflow.** It also runs on every
-push to `main`.
+Then: **Actions → Deploy to Firebase → Run workflow.**
+
+It only runs when you ask it to. A deploy should be a decision rather than a
+side effect of pushing a work-in-progress branch — there's a commented-out
+`push:` trigger in the workflow if you'd rather it went out automatically from a
+stable branch.
 
 The workflow deploys to whichever project the service account belongs to, read
 from the key's own `project_id`, so the deploy target can't drift away from the
@@ -131,11 +135,14 @@ public/
     sound.js            Web Audio effects — no audio files
     fx.js               canvas confetti
     storage.js          preferences
+    odds.js             bust odds and the hit-or-stay recommendation
   sw.js                 app-shell service worker, so it opens offline
 tests/                  node:test suites
 scripts/
   serve.mjs             dependency-free dev server
   e2e.mjs               drives two pages through a shared room
+  set-config.mjs        turns a pasted Firebase config into firebase-config.js
+  check-config.mjs      pre-deploy guard
   bundle.mjs            single-file build
   shots.mjs             screenshots, and fails on console errors
 ```
