@@ -6,22 +6,22 @@
  * a click for a deal, a rising blip for a good card, a nasty slide for a bust.
  */
 
-let ctx = null;
+let audio = null;
 let master = null;
 let enabled = true;
 
 function ready() {
   if (!enabled) return null;
-  if (!ctx) {
+  if (!audio) {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     if (!Ctx) return null;
-    ctx = new Ctx();
-    master = ctx.createGain();
+    audio = new Ctx();
+    master = audio.createGain();
     master.gain.value = 0.3;
-    master.connect(ctx.destination);
+    master.connect(audio.destination);
   }
-  if (ctx.state === 'suspended') ctx.resume();
-  return ctx;
+  if (audio.state === 'suspended') audio.resume();
+  return audio;
 }
 
 export function setSoundEnabled(on) {

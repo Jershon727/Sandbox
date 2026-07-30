@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Flip 7 — push your luck</title>
+    <title>Flip 7 — keep score together</title>
     <meta
       name="description"
-      content="Play Flip 7 against the house bots, or use the score helper to tally a real game by tapping the cards you were dealt."
+      content="Keep score for Flip 7 while you play with real cards. Host a room, everyone joins on their own phone, and the scores stay in step."
     />
     <meta name="theme-color" content="#0a0918" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -70,6 +70,16 @@
             d="M4 9h9a5.5 5.5 0 1 1 0 11H7M4 9l4.2-4.2M4 9l4.2 4.2"
           />
         </symbol>
+        <symbol id="i-share" viewBox="0 0 24 24">
+          <path
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            d="M12 3v12M12 3 7.5 7.5M12 3l4.5 4.5M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"
+          />
+        </symbol>
       </defs>
     </svg>
 
@@ -84,49 +94,52 @@
               <span class="logo__word">Flip</span>
               <span class="logo__seven" aria-hidden="true">7</span>
             </h1>
-            <p class="logo__tag">Push your luck.<br />Never repeat yourself.</p>
+            <p class="logo__tag">Play with real cards.<br />Let your phones do the maths.</p>
           </div>
 
           <div class="modes">
-            <button class="mode mode--play" data-goto="setup">
+            <button class="mode mode--host" data-goto="host">
               <span class="mode__art" aria-hidden="true">
                 <i class="mode__card" data-value="7">7</i>
                 <i class="mode__card" data-value="3">3</i>
                 <i class="mode__card" data-value="11">11</i>
               </span>
               <span class="mode__body">
-                <span class="mode__title">Play a game</span>
-                <span class="mode__sub">You vs. the house bots</span>
+                <span class="mode__title">Start a game</span>
+                <span class="mode__sub">Get a room code to share with the table</span>
               </span>
               <span class="mode__go" aria-hidden="true">→</span>
             </button>
 
-            <button class="mode mode--tally" data-goto="tally">
-              <span class="mode__art mode__art--pad" aria-hidden="true">
-                <i class="mode__pip">4</i><i class="mode__pip">9</i><i class="mode__pip">×2</i>
-                <i class="mode__pip">12</i><i class="mode__pip">+10</i><i class="mode__pip">0</i>
+            <button class="mode mode--join" data-goto="join">
+              <span class="mode__art mode__art--code" aria-hidden="true">
+                <i class="mode__slot">A</i><i class="mode__slot">B</i><i class="mode__slot">C</i
+                ><i class="mode__slot">D</i>
               </span>
               <span class="mode__body">
-                <span class="mode__title">Score helper</span>
-                <span class="mode__sub">Playing with real cards? Tap what you were dealt</span>
+                <span class="mode__title">Join a game</span>
+                <span class="mode__sub">Someone read you a four-letter code</span>
               </span>
               <span class="mode__go" aria-hidden="true">→</span>
             </button>
           </div>
 
+          <p class="home__resume" id="home-resume" hidden>
+            <button class="btn btn--ghost btn--sm" id="btn-resume">Rejoin your game</button>
+          </p>
+
           <nav class="home__nav">
             <button class="link" data-open="rules">How to play</button>
-            <button class="link" data-open="stats">Your stats</button>
             <button class="link" data-open="settings">Settings</button>
           </nav>
         </div>
       </section>
 
-      <!-- ────────────────────────────── SETUP ─────────────────────────────── -->
-      <section class="screen" id="screen-setup" data-screen="setup">
+      <!-- ──────────────────────────── HOST SETUP ──────────────────────────── -->
+      <section class="screen" id="screen-host" data-screen="host">
         <header class="topbar">
           <button class="icon-btn" data-goto="home" aria-label="Back">←</button>
-          <h2 class="topbar__title">New game</h2>
+          <h2 class="topbar__title">Start a game</h2>
           <span class="icon-btn is-ghost" aria-hidden="true"></span>
         </header>
 
@@ -135,175 +148,190 @@
             <span class="field__label">Your name</span>
             <input
               class="input"
-              id="setup-name"
+              id="host-name"
               type="text"
-              maxlength="12"
+              maxlength="14"
               autocomplete="off"
-              placeholder="You"
+              placeholder="Your name"
             />
           </label>
 
           <div class="field">
-            <span class="field__label">Opponents</span>
-            <div class="seg" id="setup-opponents" role="radiogroup" aria-label="Opponents"></div>
+            <span class="field__label">Play to</span>
+            <div class="seg" id="host-target" role="radiogroup" aria-label="Target score"></div>
           </div>
 
           <div class="field">
-            <span class="field__label">How they play</span>
-            <div class="seg" id="setup-style" role="radiogroup" aria-label="Opponent style"></div>
-            <p class="field__hint" id="setup-style-hint"></p>
+            <span class="field__label">Everyone scores on</span>
+            <div class="seg" id="host-mode" role="radiogroup" aria-label="How to keep score"></div>
+            <p class="field__hint" id="host-mode-hint"></p>
           </div>
 
-          <div class="field">
-            <span class="field__label">First to</span>
-            <div class="seg" id="setup-target" role="radiogroup" aria-label="Target score"></div>
-          </div>
-
-          <button class="btn btn--primary btn--xl" id="btn-start">Deal me in</button>
+          <button class="btn btn--primary btn--xl" id="btn-host">Create the room</button>
         </div>
       </section>
 
-      <!-- ─────────────────────────────── GAME ─────────────────────────────── -->
-      <section class="screen" id="screen-game" data-screen="game">
-        <header class="topbar topbar--game">
-          <button class="icon-btn" data-open="pause" aria-label="Game menu">☰</button>
-          <div class="hud">
-            <span class="hud__item">Round <b id="hud-round">1</b></span>
-            <span class="hud__sep" aria-hidden="true"></span>
-            <span class="hud__item">to <b id="hud-target">200</b></span>
-            <span class="hud__sep" aria-hidden="true"></span>
-            <span class="hud__item"><b id="hud-deck">94</b> left</span>
+      <!-- ───────────────────────────── JOIN ───────────────────────────────── -->
+      <section class="screen" id="screen-join" data-screen="join">
+        <header class="topbar">
+          <button class="icon-btn" data-goto="home" aria-label="Back">←</button>
+          <h2 class="topbar__title">Join a game</h2>
+          <span class="icon-btn is-ghost" aria-hidden="true"></span>
+        </header>
+
+        <div class="sheet">
+          <div class="field">
+            <span class="field__label">Room code</span>
+            <input
+              class="input input--code"
+              id="join-code"
+              type="text"
+              inputmode="text"
+              autocapitalize="characters"
+              autocomplete="off"
+              spellcheck="false"
+              maxlength="4"
+              placeholder="ABCD"
+              aria-describedby="join-error"
+            />
           </div>
+
+          <label class="field">
+            <span class="field__label">Your name</span>
+            <input
+              class="input"
+              id="join-name"
+              type="text"
+              maxlength="14"
+              autocomplete="off"
+              placeholder="Your name"
+            />
+          </label>
+
+          <p class="field__error" id="join-error" role="alert"></p>
+
+          <button class="btn btn--primary btn--xl" id="btn-join">Join</button>
+          <p class="sheet__note">
+            Rejoining after your phone died? Use the same name and you'll get your seat and your
+            score back.
+          </p>
+        </div>
+      </section>
+
+      <!-- ───────────────────────────── ROOM ───────────────────────────────── -->
+      <section class="screen" id="screen-room" data-screen="room">
+        <header class="topbar topbar--room">
+          <button class="icon-btn" data-open="menu" aria-label="Menu">☰</button>
+          <button class="roomchip" id="room-chip">
+            <span class="roomchip__code" id="room-code">····</span>
+            <span class="roomchip__meta" id="room-meta">round 1</span>
+          </button>
           <button class="icon-btn" data-open="rules" aria-label="How to play">?</button>
         </header>
 
-        <div class="opponents" id="opponents"></div>
+        <div class="standings" id="standings" aria-label="Scores"></div>
 
-        <div class="felt">
-          <div class="deck" id="deck-pile" aria-hidden="true">
-            <span class="deck__card"></span>
-            <span class="deck__card"></span>
-            <span class="deck__card"></span>
+        <p class="roomhint" id="room-hint" hidden></p>
+
+        <div class="tally__card" id="hand-card">
+          <div class="tally__head">
+            <span class="whose" id="whose">Your hand</span>
+            <div class="pips" id="pips" aria-hidden="true"></div>
+            <span class="tally__flag" id="flag" hidden></span>
           </div>
-          <p class="felt__status" id="felt-status"></p>
+
+          <div class="hand hand--tally" id="hand">
+            <p class="hand__empty">Tap the cards below</p>
+          </div>
+
+          <div class="readout">
+            <span class="readout__score" id="round-score">0</span>
+            <span class="readout__formula" id="formula">Tap the cards you were dealt</span>
+          </div>
         </div>
 
-        <div class="seat" id="seat"></div>
+        <div class="pad" id="pad"></div>
 
-        <p class="targeting" id="targeting" hidden></p>
-
-        <div class="actions" id="actions">
-          <button class="btn btn--stay" id="btn-stay">
-            <span class="btn__label">Stay</span>
-            <span class="btn__sub" id="stay-sub">bank 0</span>
+        <div class="tally__foot">
+          <button class="btn btn--ghost btn--sm" id="btn-undo">
+            <svg class="ico" aria-hidden="true"><use href="#i-undo" /></svg> Undo
           </button>
-          <button class="btn btn--hit" id="btn-hit">
-            <span class="risk" id="risk" aria-hidden="true"><span class="risk__fill"></span></span>
-            <span class="btn__label">Hit</span>
-            <span class="btn__sub" id="hit-sub">bust risk 0%</span>
-          </button>
-        </div>
-        <div class="banner" id="banner" role="status" aria-live="assertive"></div>
-        <p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
-      </section>
-
-      <!-- ─────────────────────────────── TALLY ────────────────────────────── -->
-      <section class="screen" id="screen-tally" data-screen="tally">
-        <header class="topbar">
-          <button class="icon-btn" data-goto="home" aria-label="Back">←</button>
-          <h2 class="topbar__title">
-            <span id="tally-round-label">Score helper</span>
-          </h2>
-          <button class="icon-btn" id="tally-edit" aria-label="Edit players">⋯</button>
-        </header>
-
-        <!-- first run / new game -->
-        <div class="sheet" id="tally-setup">
-          <p class="sheet__lede">
-            Keeping score at a real table? Add everyone playing — then just tap the cards as they
-            land and Flip&nbsp;7 does the arithmetic.
-          </p>
-          <div class="field">
-            <span class="field__label">Players</span>
-            <div class="namelist" id="tally-namelist"></div>
-            <button class="btn btn--ghost btn--sm" id="tally-add">+ Add player</button>
-          </div>
-          <div class="field">
-            <span class="field__label">First to</span>
-            <div class="seg" id="tally-target" role="radiogroup" aria-label="Target score"></div>
-          </div>
-          <button class="btn btn--primary btn--xl" id="tally-start">Start scoring</button>
-        </div>
-
-        <!-- the scoring surface -->
-        <div class="tally" id="tally-main" hidden>
-          <div class="rail" id="tally-rail" role="tablist" aria-label="Players"></div>
-
-          <div class="tally__card">
-            <div class="tally__head">
-              <div class="pips" id="tally-pips" aria-hidden="true"></div>
-              <span class="tally__flag" id="tally-flag" hidden></span>
-            </div>
-
-            <div class="hand hand--tally" id="tally-hand">
-              <p class="hand__empty">Tap the cards below</p>
-            </div>
-
-            <div class="readout">
-              <span class="readout__score" id="tally-score">0</span>
-              <span class="readout__formula" id="tally-formula">Tap the cards you were dealt</span>
-            </div>
-          </div>
-
-          <div class="pad" id="tally-pad"></div>
-
-          <div class="tally__foot">
-            <button class="btn btn--ghost btn--sm" id="tally-undo">
-              <svg class="ico" aria-hidden="true"><use href="#i-undo" /></svg> Undo
-            </button>
-            <button class="btn btn--ghost btn--sm" id="tally-clear">Clear hand</button>
-            <button class="btn btn--primary" id="tally-end">End round →</button>
-          </div>
+          <button class="btn btn--ghost btn--sm" id="btn-clear">Clear</button>
+          <button class="btn btn--primary" id="btn-end-round">End round →</button>
+          <p class="waiting" id="waiting" hidden>Waiting for the host to end the round</p>
         </div>
       </section>
     </main>
 
     <!-- ───────────────────────────── OVERLAYS ────────────────────────────── -->
     <div class="modal" id="modal-round" hidden>
-      <div class="modal__panel modal__panel--wide" role="dialog" aria-modal="true" aria-label="Round summary">
+      <div
+        class="modal__panel modal__panel--wide"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Round summary"
+      >
         <h3 class="modal__title" id="round-title">Round 1</h3>
         <div class="scores" id="round-scores"></div>
-        <button class="btn btn--primary btn--xl" id="btn-next-round">Next round</button>
+        <button class="btn btn--primary btn--xl" data-close id="btn-next-round">
+          Next round
+        </button>
       </div>
     </div>
 
     <div class="modal" id="modal-over" hidden>
       <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Game over">
         <p class="over__crown" aria-hidden="true">👑</p>
-        <h3 class="modal__title" id="over-title">You win!</h3>
+        <h3 class="modal__title" id="over-title">Winner</h3>
         <p class="modal__lede" id="over-sub"></p>
         <div class="scores" id="over-scores"></div>
         <div class="modal__actions">
-          <button class="btn btn--primary btn--xl" id="btn-rematch">Rematch</button>
-          <button class="btn btn--ghost" data-goto="home" data-close>Back to menu</button>
+          <button class="btn btn--primary btn--xl" id="btn-rematch">Play again</button>
+          <button class="btn btn--ghost" id="btn-leave-over">Leave the room</button>
         </div>
       </div>
     </div>
 
-    <div class="modal" id="modal-pause" hidden>
-      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Paused">
-        <h3 class="modal__title">Paused</h3>
+    <div class="modal" id="modal-menu" hidden>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Menu">
+        <h3 class="modal__title">Room <span id="menu-code">····</span></h3>
+        <p class="modal__lede" id="menu-status"></p>
         <div class="modal__actions">
-          <button class="btn btn--primary" data-close>Resume</button>
+          <button class="btn btn--primary" id="btn-share">
+            <svg class="ico" aria-hidden="true"><use href="#i-share" /></svg>
+            Share the code
+          </button>
+          <button class="btn btn--ghost" id="btn-manage" hidden>Players</button>
           <button class="btn btn--ghost" data-open="rules">How to play</button>
           <button class="btn btn--ghost" data-open="settings">Settings</button>
-          <button class="btn btn--danger" id="btn-quit">Quit game</button>
+          <button class="btn btn--ghost" data-close>Back to the game</button>
+          <button class="btn btn--danger btn--sm" id="btn-leave">Leave the room</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-players" hidden>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Players">
+        <h3 class="modal__title">Players</h3>
+        <p class="modal__lede">
+          Add anyone who isn't scoring on their own phone. You can rename or remove them here too.
+        </p>
+        <div class="namelist" id="players-namelist"></div>
+        <button class="btn btn--ghost btn--sm" id="players-add">+ Add a player</button>
+        <div class="modal__actions">
+          <button class="btn btn--primary" id="players-save">Save</button>
+          <button class="btn btn--ghost" data-close>Cancel</button>
         </div>
       </div>
     </div>
 
     <div class="modal" id="modal-rules" hidden>
-      <div class="modal__panel modal__panel--tall" role="dialog" aria-modal="true" aria-label="How to play">
+      <div
+        class="modal__panel modal__panel--tall"
+        role="dialog"
+        aria-modal="true"
+        aria-label="How to play"
+      >
         <h3 class="modal__title">How to play</h3>
         <div class="prose">
           <p class="prose__lede">
@@ -311,57 +339,63 @@
             luck runs out. First to <b id="rules-target">200</b> wins.
           </p>
 
-          <h4>Your turn</h4>
+          <h4>Using this app</h4>
+          <p>
+            Deal as normal with the real cards. As each card lands in front of you, tap it on your
+            phone — everyone at the table sees the scores update. When the round is over, the host
+            taps <b>End round</b> and every hand banks at once.
+          </p>
+          <p class="prose__note">
+            Numbers you already hold are ringed on the keypad. Tapping a ringed number is your
+            bust — the same thing that just happened on the table.
+          </p>
+
+          <h4>Scoring</h4>
           <ul>
-            <li><b>Hit</b> — flip one more card.</li>
-            <li><b>Stay</b> — bank what you have and sit out the rest of the round.</li>
+            <li><b>Bust</b> — a second copy of a number you hold. Zero for the round.</li>
             <li>
-              <b>Bust</b> — flip a number you already have and you lose the whole round. Zero
-              points.
+              <b>Flip 7</b> — seven <em>different</em> numbers ends the round for everyone and pays
+              <b>+15</b>.
+            </li>
+            <li>
+              <span class="tag tag--mod">+2 +4 +6 +8 +10</span> add on.
+              <span class="tag tag--mod">×2</span> doubles your number cards, not the bonuses.
+              Modifiers can't bust you and don't count toward Flip 7.
             </li>
           </ul>
-
-          <h4>Flip 7</h4>
-          <p>
-            Seven <em>different</em> number cards ends the round instantly and pays a
-            <b>+15</b> bonus. Everyone else scores whatever they're holding.
-          </p>
-
-          <h4>Modifiers</h4>
-          <p>
-            <span class="tag tag--mod">+2 +4 +6 +8 +10</span> add to your total.
-            <span class="tag tag--mod">×2</span> doubles your number cards (not the bonuses).
-            Modifiers can't bust you and don't count toward Flip 7.
-          </p>
 
           <h4>Action cards</h4>
           <ul class="acts">
             <li>
-              <span class="acts__icon acts__icon--freeze"><svg class="ico" aria-hidden="true"><use href="#i-freeze" /></svg></span>
-              <span><b>Freeze</b> — pick any player still in the round. They bank their points and
-                sit out. Yes, you can pick yourself.</span>
+              <span class="acts__icon acts__icon--freeze"
+                ><svg class="ico" aria-hidden="true"><use href="#i-freeze" /></svg
+              ></span>
+              <span
+                ><b>Freeze</b> — that player banks what they have and sits out the round. Their score
+                is already correct in the app; just stop tapping.</span
+              >
             </li>
             <li>
-              <span class="acts__icon acts__icon--flip3"><svg class="ico" aria-hidden="true"><use href="#i-flip3" /></svg></span>
-              <span><b>Flip Three</b> — pick any player still in the round. They flip three cards,
-                one at a time. Busting stops it early.</span>
+              <span class="acts__icon acts__icon--flip3"
+                ><svg class="ico" aria-hidden="true"><use href="#i-flip3" /></svg
+              ></span>
+              <span><b>Flip Three</b> — they flip three cards. Tap them as they land.</span>
             </li>
             <li>
-              <span class="acts__icon acts__icon--chance"><svg class="ico" aria-hidden="true"><use href="#i-chance" /></svg></span>
-              <span><b>Second Chance</b> — your next duplicate is discarded instead of busting you.
-                Draw one while holding one and you must give it away.</span>
+              <span class="acts__icon acts__icon--chance"
+                ><svg class="ico" aria-hidden="true"><use href="#i-chance" /></svg
+              ></span>
+              <span
+                ><b>Second Chance</b> — tap the shield to hold one. Your next duplicate is discarded
+                instead of busting you.</span
+              >
             </li>
           </ul>
 
           <h4>The deck</h4>
           <p>
-            94 cards: one 0, one 1, two 2s, all the way up to twelve 12s — plus six modifiers and
-            nine action cards. High numbers are common, which is exactly why a fat hand is a
-            dangerous hand.
-          </p>
-          <p class="prose__note">
-            House rule in this version: the deck is reshuffled at the start of every round, so the
-            bust risk you see is always exact.
+            94 cards: one 0, one 1, two 2s, up to twelve 12s — plus six modifiers and nine action
+            cards. High numbers are common, which is why a fat hand is a dangerous hand.
           </p>
         </div>
         <button class="btn btn--primary btn--xl" data-close>Got it</button>
@@ -376,29 +410,8 @@
       </div>
     </div>
 
-    <div class="modal" id="modal-stats" hidden>
-      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Your stats">
-        <h3 class="modal__title">Your stats</h3>
-        <div class="stats" id="stats-grid"></div>
-        <div class="modal__actions">
-          <button class="btn btn--primary" data-close>Done</button>
-          <button class="btn btn--ghost btn--sm" id="btn-reset-stats">Reset stats</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="modal" id="modal-players" hidden>
-      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="Edit players">
-        <h3 class="modal__title">Players</h3>
-        <div class="namelist" id="players-namelist"></div>
-        <button class="btn btn--ghost btn--sm" id="players-add">+ Add player</button>
-        <div class="modal__actions">
-          <button class="btn btn--primary" id="players-save">Save</button>
-          <button class="btn btn--danger btn--sm" id="players-reset">Start a new game</button>
-        </div>
-      </div>
-    </div>
-
+    <div class="banner" id="banner" role="status" aria-live="assertive"></div>
+    <p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
     <script type="module" src="js/main.js"></script>

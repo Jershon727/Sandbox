@@ -1,73 +1,75 @@
 /**
- * App shell: screen routing, the game driver, and the glue between the engine's
- * event stream and the animations on screen.
+ * App shell: screens, hosting and joining, and the round lifecycle.
  *
- * The driver is a small loop — ask the engine what it needs, animate whatever
- * it emitted, hand control back to the player when it's their turn.
+ * All shared state lives in the Store; this file turns state changes into what
+ * you see — the standings, the round summary every phone shows at once, and the
+ * winner.
  */
 
-import { Flip7Game, Status } from './engine.js';
-import { STYLES, BOT_ROSTER, decideMove, decideTarget, thinkingTime } from './ai.js';
-import { bustChance, riskBand } from './odds.js';
-import { ACTIONS } from './cards.js';
-import { createCard, dealFrom, renderPips } from './cardview.js';
-import { FLIP7_TARGET } from './scoring.js';
+import { Store } from './store.js';
+import { Scorer } from './scorer.js';
+import {
+  endRoundUpdates,
+  rematchUpdates,
+  normalizeCode,
+  isCompleteCode,
+  roundStarted,
+  playerList,
+  standings,
+} from './room.js';
 import {
   settings,
   saveSettings,
   setup,
   saveSetup,
-  stats,
-  bumpStat,
-  recordBest,
-  resetStats,
   speedFactor,
+  resolvedTheme,
 } from './storage.js';
 import {
-  wait,
   openModal,
   closeModal,
   closeAllModals,
   anyModalOpen,
   trapFocus,
   toast,
-  showBanner,
   announce,
-  setStatus,
   fillScores,
 } from './views.js';
 import { sfx, setSoundEnabled, unlockSound } from './sound.js';
-import { initFx, setFxEnabled, burstFrom, celebrate } from './fx.js';
-import { TallyController } from './tally.js';
+import { initFx, setFxEnabled, celebrate } from './fx.js';
 
 const $ = (id) => document.getElementById(id);
 
-const state = {
-  screen: 'home',
-  game: null,
-  spotlightId: null,
-  busy: false,
-  awaitingTarget: null,
-  cardEls: new Map(), // player id -> Map(cardId -> element)
-};
+const store = new Store();
+const scorer = new Scorer(store);
 
-const tally = new TallyController();
+const view = {
+  screen: 'home',
+  onlineAvailable: false,
+  shownRound: null, // last round summary displayed
+  shownWinner: null,
+};
 
 // ── boot ──────────────────────────────────────────────────────────────────
 
-function boot() {
+async function boot() {
   applyTheme();
   setSoundEnabled(settings.sound);
   setFxEnabled(settings.effects);
   initFx($('fx'));
 
-  buildSetup();
+  buildHostSetup();
   buildSettings();
   wireChrome();
-  tally.mount();
+  scorer.mount();
 
-  // A handle for debugging and for the browser-driven checks in scripts/.
-  window.__flip7 = state;
+  store.subscribe(onState);
+  store.onError(onSyncError);
+
+  window.__flip7 = { store, scorer, view };
+
+  view.onlineAvailable = await Store.onlineAvailable();
+  paintHostSetup();
 
   document.addEventListener(
     'pointerdown',
@@ -76,6 +78,12 @@ function boot() {
     },
     { once: true },
   );
+
+  window.matchMedia?.('(prefers-color-scheme: light)').addEventListener?.('change', () => {
+    if (settings.theme === 'auto') applyTheme();
+  });
+
+  await route();
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
@@ -86,16 +94,49 @@ function boot() {
   }
 }
 
+/**
+ * Where does opening the app land you?
+ *
+ * A phone that locks mid-game and comes back should be back in the game, so an
+ * existing membership wins. A shared link for a different room beats it.
+ */
+async function route() {
+  const linkCode = normalizeCode(new URLSearchParams(location.search).get('room') ?? '');
+  const saved = store.savedMembership;
+
+  if (saved?.code && (!linkCode || linkCode === saved.code)) {
+    const rejoined = await store.resume().catch(() => false);
+    if (rejoined) {
+      view.shownRound = store.state?.lastRound?.round ?? null;
+      view.shownWinner = store.state?.winnerId ?? null;
+      go('room');
+      return;
+    }
+  }
+
+  if (linkCode) {
+    $('join-code').value = linkCode;
+    $('join-name').value = setup.name;
+    go('join');
+    $('join-name').focus();
+    return;
+  }
+
+  $('home-resume').hidden = !store.savedMembership;
+  go('home');
+}
+
 function applyTheme() {
-  document.documentElement.dataset.theme = settings.theme;
+  const theme = resolvedTheme();
+  document.documentElement.dataset.theme = theme;
   document
     .querySelector('meta[name="theme-color"]')
-    ?.setAttribute('content', settings.theme === 'light' ? '#f2f0fb' : '#0a0918');
+    ?.setAttribute('content', theme === 'light' ? '#f2f0fb' : '#0a0918');
   document.documentElement.style.setProperty('--speed', String(speedFactor()));
 }
 
 function go(screen) {
-  state.screen = screen;
+  view.screen = screen;
   for (const el of document.querySelectorAll('.screen')) {
     el.classList.toggle('is-active', el.dataset.screen === screen);
   }
@@ -109,7 +150,6 @@ function wireChrome() {
     const goto = e.target.closest('[data-goto]');
     if (goto) {
       sfx.tap();
-      if (goto.hasAttribute('data-close')) closeAllModals();
       go(goto.dataset.goto);
       return;
     }
@@ -118,8 +158,8 @@ function wireChrome() {
     if (opener) {
       sfx.tap();
       const which = opener.dataset.open;
-      if (which === 'rules') $('rules-target').textContent = String(setup.target);
-      if (which === 'stats') renderStats();
+      if (which === 'rules') $('rules-target').textContent = String(store.state?.target ?? setup.target);
+      if (which === 'menu') paintMenu();
       openModal(which);
       return;
     }
@@ -130,40 +170,37 @@ function wireChrome() {
       return;
     }
 
-    // tapping the backdrop closes non-blocking dialogs
     const modal = e.target.classList?.contains('modal') ? e.target : null;
-    if (modal && !['modal-round', 'modal-over'].includes(modal.id)) {
-      closeModal(modal);
-    }
+    if (modal && !['modal-round', 'modal-over'].includes(modal.id)) closeModal(modal);
   });
 
-  $('btn-start').addEventListener('click', startGame);
-  $('btn-hit').addEventListener('click', () => playerMove('hit'));
-  $('btn-stay').addEventListener('click', () => playerMove('stay'));
-  $('btn-quit').addEventListener('click', () => {
-    closeAllModals();
-    state.game = null;
-    go('home');
-  });
-  $('btn-reset-stats').addEventListener('click', () => {
-    resetStats();
-    renderStats();
-    toast('Stats cleared');
-  });
+  $('btn-host').addEventListener('click', hostGame);
+  $('btn-join').addEventListener('click', joinGame);
+  $('btn-resume').addEventListener('click', resumeGame);
+  $('btn-end-round').addEventListener('click', endRound);
+  $('btn-rematch').addEventListener('click', rematch);
+  $('btn-share').addEventListener('click', shareRoom);
+  $('room-chip').addEventListener('click', shareRoom);
+  $('btn-leave').addEventListener('click', leaveRoom);
+  $('btn-leave-over').addEventListener('click', leaveRoom);
+  $('btn-manage').addEventListener('click', openPlayers);
+  $('players-add').addEventListener('click', addPlayerRow);
+  $('players-save').addEventListener('click', savePlayers);
 
-  $('btn-next-round').addEventListener('click', (e) => {
-    closeAllModals();
-    if (e.currentTarget.dataset.mode === 'tally') return;
-    nextRound();
+  const code = $('join-code');
+  code.addEventListener('input', () => {
+    const clean = normalizeCode(code.value);
+    if (code.value !== clean) code.value = clean;
+    $('join-error').textContent = '';
+    if (isCompleteCode(clean)) $('join-name').focus();
   });
-
-  $('btn-rematch').addEventListener('click', (e) => {
-    closeAllModals();
-    if (e.currentTarget.dataset.mode === 'tally') {
-      tally.rematch();
-      return;
-    }
-    startGame();
+  for (const input of [code, $('join-name')]) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') joinGame();
+    });
+  }
+  $('host-name').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') hostGame();
   });
 
   document.addEventListener('keydown', (e) => {
@@ -173,29 +210,11 @@ function wireChrome() {
         const top = document.querySelector('.modal:not([hidden])');
         if (top && !['modal-round', 'modal-over'].includes(top.id)) closeModal(top);
       }
-      return;
-    }
-    if (state.screen !== 'game') return;
-
-    if (state.awaitingTarget) {
-      const n = Number(e.key);
-      if (n >= 1 && n <= state.awaitingTarget.targets.length) {
-        chooseTarget(state.awaitingTarget.targets[n - 1]);
-      }
-      return;
-    }
-    if (e.key === 'h' || e.key === 'H' || e.key === ' ') {
-      e.preventDefault();
-      playerMove('hit');
-    } else if (e.key === 's' || e.key === 'S') {
-      playerMove('stay');
-    } else if (e.key === '?' || e.key === 'r') {
-      openModal('rules');
     }
   });
 }
 
-// ── setup screen ──────────────────────────────────────────────────────────
+// ── setup screens ─────────────────────────────────────────────────────────
 
 function segment(host, options, current, onPick) {
   host.replaceChildren();
@@ -205,6 +224,7 @@ function segment(host, options, current, onPick) {
     btn.type = 'button';
     btn.setAttribute('role', 'radio');
     btn.setAttribute('aria-checked', String(opt.value === current));
+    if (opt.disabled) btn.disabled = true;
     btn.textContent = opt.label;
     btn.addEventListener('click', () => {
       sfx.tap();
@@ -214,54 +234,45 @@ function segment(host, options, current, onPick) {
   }
 }
 
-const STYLE_OPTIONS = [
-  { value: 'cautious', label: 'Careful' },
-  { value: 'balanced', label: 'Balanced' },
-  { value: 'reckless', label: 'Wild' },
-  { value: 'mixed', label: 'Mixed' },
-];
-
-const STYLE_HINTS = {
-  cautious: STYLES.cautious.blurb,
-  balanced: STYLES.balanced.blurb,
-  reckless: STYLES.reckless.blurb,
-  mixed: 'A table of different nerves. Recommended.',
-};
-
-function buildSetup() {
-  const name = $('setup-name');
-  name.value = setup.name;
+function buildHostSetup() {
+  const name = $('host-name');
+  name.value = setup.name === 'You' ? '' : setup.name;
   name.addEventListener('input', () => saveSetup({ name: name.value }));
-
-  const paint = () => {
-    segment(
-      $('setup-opponents'),
-      [1, 2, 3, 4, 5].map((n) => ({ value: n, label: String(n) })),
-      setup.opponents,
-      (v) => {
-        saveSetup({ opponents: v });
-        paint();
-      },
-    );
-    segment($('setup-style'), STYLE_OPTIONS, setup.style, (v) => {
-      saveSetup({ style: v });
-      paint();
-    });
-    segment(
-      $('setup-target'),
-      [100, 200, 300].map((n) => ({ value: n, label: String(n) })),
-      setup.target,
-      (v) => {
-        saveSetup({ target: v });
-        paint();
-      },
-    );
-    $('setup-style-hint').textContent = STYLE_HINTS[setup.style] ?? '';
-  };
-  paint();
 }
 
-// ── settings & stats ──────────────────────────────────────────────────────
+function paintHostSetup() {
+  // Without a Firebase config there is nothing to sync to, so don't offer it.
+  if (!view.onlineAvailable && setup.mode === 'firebase') saveSetup({ mode: 'local' });
+
+  segment(
+    $('host-target'),
+    [100, 200, 300].map((n) => ({ value: n, label: String(n) })),
+    setup.target,
+    (v) => {
+      saveSetup({ target: v });
+      paintHostSetup();
+    },
+  );
+
+  segment(
+    $('host-mode'),
+    [
+      { value: 'firebase', label: 'Their own phones', disabled: !view.onlineAvailable },
+      { value: 'local', label: 'Just this one' },
+    ],
+    setup.mode,
+    (v) => {
+      saveSetup({ mode: v });
+      paintHostSetup();
+    },
+  );
+
+  $('host-mode-hint').textContent = view.onlineAvailable
+    ? setup.mode === 'firebase'
+      ? 'Everyone joins with the room code and taps their own cards.'
+      : 'One phone for the table — you tap for everybody.'
+    : 'Online rooms need a Firebase config in firebase-config.js. Until then, one phone keeps score for the table.';
+}
 
 function buildSettings() {
   const host = $('settings-opts');
@@ -295,7 +306,7 @@ function buildSettings() {
     host.append(row);
   };
 
-  toggle('Sound', 'Blips, busts and fanfares', 'sound', (on) => {
+  toggle('Sound', 'Blips for cards, a groan for a bust', 'sound', (on) => {
     setSoundEnabled(on);
     if (on) {
       unlockSound();
@@ -303,19 +314,6 @@ function buildSettings() {
     }
   });
   toggle('Confetti', 'Celebrate a Flip 7 properly', 'effects', setFxEnabled);
-  toggle('Risk meter', 'Show your bust odds on the Hit button', 'riskMeter', () => {
-    if (state.game) renderAll();
-  });
-
-  const speedRow = document.createElement('div');
-  speedRow.className = 'opt';
-  const speedLabel = document.createElement('span');
-  speedLabel.className = 'opt__label';
-  speedLabel.textContent = 'Pace';
-  const speedSeg = document.createElement('div');
-  speedSeg.className = 'seg';
-  speedRow.append(speedLabel, speedSeg);
-  host.append(speedRow);
 
   const themeRow = document.createElement('div');
   themeRow.className = 'opt';
@@ -329,22 +327,9 @@ function buildSettings() {
 
   const paint = () => {
     segment(
-      speedSeg,
-      [
-        { value: 'chill', label: 'Chill' },
-        { value: 'normal', label: 'Normal' },
-        { value: 'fast', label: 'Fast' },
-      ],
-      settings.speed,
-      (v) => {
-        saveSettings({ speed: v });
-        applyTheme();
-        paint();
-      },
-    );
-    segment(
       themeSeg,
       [
+        { value: 'auto', label: 'Auto' },
         { value: 'dark', label: 'Dark' },
         { value: 'light', label: 'Light' },
       ],
@@ -359,660 +344,348 @@ function buildSettings() {
   paint();
 }
 
-function renderStats() {
-  const host = $('stats-grid');
-  const winRate = stats.games ? Math.round((stats.wins / stats.games) * 100) : 0;
-  const items = [
-    ['Games', stats.games],
-    ['Wins', stats.wins],
-    ['Win rate', `${winRate}%`],
-    ['Flip 7s', stats.flip7s],
-    ['Busts', stats.busts],
-    ['Best round', stats.bestRound],
-  ];
-  host.replaceChildren();
-  for (const [label, value] of items) {
-    const cell = document.createElement('div');
-    cell.className = 'stat';
-    const v = document.createElement('span');
-    v.className = 'stat__value';
-    v.textContent = String(value);
-    const l = document.createElement('span');
-    l.className = 'stat__label';
-    l.textContent = label;
-    cell.append(v, l);
-    host.append(cell);
+// ── hosting & joining ─────────────────────────────────────────────────────
+
+function busy(button, on, label) {
+  button.disabled = on;
+  if (on) {
+    button.dataset.was = button.textContent;
+    button.textContent = label;
+  } else if (button.dataset.was) {
+    button.textContent = button.dataset.was;
   }
 }
 
-// ── starting a game ───────────────────────────────────────────────────────
-
-function startGame() {
-  const you = { id: 'you', name: ($('setup-name').value || 'You').trim(), avatar: '⭐' };
-  const roster = BOT_ROSTER.slice(0, setup.opponents).map((bot, i) => ({
-    id: `bot${i}`,
-    name: bot.name,
-    avatar: bot.avatar,
-    isBot: true,
-    style: setup.style === 'mixed' ? bot.style : setup.style,
-  }));
-
-  state.game = new Flip7Game({ players: [you, ...roster], targetScore: setup.target });
-  state.spotlightId = 'you';
-  state.cardEls = new Map();
-  state.awaitingTarget = null;
-  bumpStat('games');
-
-  go('game');
-  $('hud-target').textContent = String(setup.target);
-  renderAll();
-  nextRound();
-}
-
-function nextRound() {
-  const game = state.game;
-  if (!game) return;
-  state.cardEls = new Map();
-  $('opponents').replaceChildren();
-  const seat = $('seat');
-  seat.replaceChildren();
-  delete seat.dataset.player;
-  game.startRound();
-  renderAll();
-  drive();
-}
-
-// ── the driver ────────────────────────────────────────────────────────────
-
-async function drive() {
-  const game = state.game;
-  if (!game || state.busy) return;
-  state.busy = true;
-  setControls(false);
-
-  // Quitting mid-turn swaps or clears the game while this loop is awaiting an
-  // animation, so every resume checks that it is still driving the same one.
-  const stillMine = () => state.game === game;
-
+async function hostGame() {
+  const btn = $('btn-host');
+  const name = ($('host-name').value || 'Me').trim().slice(0, 14);
+  saveSetup({ name });
+  busy(btn, true, 'Creating…');
   try {
-    for (;;) {
-      await flush();
-      if (!stillMine()) return;
-      const req = game.request();
-
-      if (req.type === 'auto') {
-        game.tick();
-        continue;
-      }
-
-      if (req.type === 'move') {
-        const player = game.byId(req.playerId);
-        spotlight(player);
-        renderAll();
-        if (!player.isBot) {
-          setStatus('Your call — hit or stay?');
-          setControls(true);
-          announce(`Your turn. ${game.scoreOf(player)} points in front of you.`);
-          return;
-        }
-        setStatus(`${player.name} is thinking…`);
-        await wait(thinkingTime(game, player, game.rng));
-        if (!stillMine()) return;
-        if (decideMove(game, player, game.rng) === 'hit') game.hit();
-        else game.stay();
-        continue;
-      }
-
-      if (req.type === 'target') {
-        const actor = game.byId(req.playerId);
-        if (!actor.isBot) {
-          // Stay inside this loop while the player picks — handing control to a
-          // fresh drive() would bounce off the busy flag and stall the game.
-          await promptTarget(req);
-          if (!stillMine()) return;
-          continue;
-        }
-        setStatus(`${actor.name} is choosing…`);
-        await wait(560);
-        if (!stillMine()) return;
-        game.resolveTarget(decideTarget(game, actor, req, game.rng));
-        continue;
-      }
-
-      if (req.type === 'round-over') {
-        await endRound();
-        return;
-      }
-
-      if (req.type === 'game-over') {
-        await endGame();
-        return;
-      }
-
-      return;
-    }
+    const code = await store.host({ name, target: setup.target, mode: setup.mode });
+    view.shownRound = null;
+    view.shownWinner = null;
+    scorer.selectedId = null;
+    go('room');
+  } catch (err) {
+    sfx.error();
+    toast(err.message ?? 'Could not create the room');
   } finally {
-    state.busy = false;
+    busy(btn, false);
   }
 }
 
-function playerMove(move) {
-  const game = state.game;
-  if (!game || state.busy || state.awaitingTarget) return;
-  const req = game.request();
-  if (req.type !== 'move' || game.byId(req.playerId).isBot) return;
+async function joinGame() {
+  const btn = $('btn-join');
+  const code = normalizeCode($('join-code').value);
+  const name = ($('join-name').value || '').trim().slice(0, 14);
+  const error = $('join-error');
+  error.textContent = '';
 
-  setControls(false);
-  if (move === 'hit') game.hit();
-  else {
-    sfx.stay();
-    game.stay();
+  if (!isCompleteCode(code)) {
+    error.textContent = 'A room code is four letters and numbers.';
+    $('join-code').focus();
+    return;
   }
-  drive();
-}
-
-// ── animating engine events ───────────────────────────────────────────────
-
-async function flush() {
-  const game = state.game;
-  if (!game) return;
-  for (const ev of game.drain()) {
-    if (state.game !== game) return;
-    await handle(ev, game);
+  if (!name) {
+    error.textContent = 'Which name should the table see?';
+    $('join-name').focus();
+    return;
   }
-}
 
-async function handle(ev, game) {
-  if (state.game !== game) return;
-  const player = ev.playerId ? game.byId(ev.playerId) : null;
-  const isYou = player && !player.isBot;
-
-  switch (ev.type) {
-    case 'round-start':
-      setStatus(`Round ${ev.round} — cards out`);
-      break;
-
-    case 'draw': {
-      $('deck-pile').classList.add('is-dealing');
-      setTimeout(() => $('deck-pile').classList.remove('is-dealing'), 300);
-      sfx.deal();
-      $('hud-deck').textContent = String(ev.deckLeft);
-      renderAll();
-      await wait(ev.reason === 'flip3' ? 330 : 250);
-      break;
-    }
-
-    case 'gain':
-      if (ev.card.kind === 'modifier') sfx.modifier();
-      else if (ev.card.kind === 'number') sfx.gain(ev.card.value);
-      renderAll();
-      if (player.numbers.length === FLIP7_TARGET - 1 && player.status === Status.ACTIVE) {
-        setStatus(`${isYou ? 'You are' : `${player.name} is`} one card from Flip 7`);
-        await wait(260);
+  saveSetup({ name });
+  busy(btn, true, 'Joining…');
+  try {
+    // A code that isn't online may still be a game on this device.
+    const modes = view.onlineAvailable ? ['firebase', 'local'] : ['local'];
+    let joined = false;
+    let last = null;
+    for (const mode of modes) {
+      try {
+        await store.join({ code, name, mode });
+        joined = true;
+        break;
+      } catch (err) {
+        last = err;
       }
-      break;
-
-    case 'second-chance':
-      sfx.save();
-      renderAll();
-      await showBanner('Second Chance!', {
-        tone: 'save',
-        sub: `${player.name} dodges the ${ev.card.value}`,
-        ms: 1000,
-      });
-      break;
-
-    case 'bust': {
-      sfx.bust();
-      if (isYou) bumpStat('busts');
-      markFatal(player, ev.card);
-      renderAll();
-      shake(seatOrPod(player));
-      await showBanner('Bust', {
-        tone: 'bust',
-        sub: `${player.name} drew a second ${ev.card.value}`,
-        ms: 1050,
-      });
-      break;
     }
+    if (!joined) throw last ?? new Error('Could not join');
 
-    case 'flip7': {
-      sfx.flip7();
-      renderAll();
-      if (isYou) bumpStat('flip7s');
-      burstFrom(seatOrPod(player) ?? $('felt'));
-      await showBanner('FLIP 7!', {
-        tone: 'flip7',
-        sub: `${player.name} · +15 bonus · round over`,
-        ms: 1650,
-      });
-      break;
-    }
-
-    case 'freeze':
-      sfx.freeze();
-      renderAll();
-      await showBanner('Frozen', {
-        tone: 'freeze',
-        sub:
-          ev.playerId === ev.targetId
-            ? `${player.name} freezes themselves on ${ev.score}`
-            : `${player.name} → ${game.byId(ev.targetId).name} banks ${ev.score}`,
-        ms: 1150,
-      });
-      break;
-
-    case 'flip3-start':
-      sfx.flip3();
-      renderAll();
-      await showBanner('Flip Three', {
-        tone: 'flip3',
-        sub:
-          ev.playerId === ev.targetId
-            ? `${player.name} takes three`
-            : `${player.name} → ${game.byId(ev.targetId).name}`,
-        ms: 1050,
-      });
-      break;
-
-    case 'defer':
-      setStatus(`${ACTIONS[ev.card.action].label} held until the flips are done`);
-      await wait(340);
-      break;
-
-    case 'gift':
-      sfx.save();
-      renderAll();
-      toast(`${player.name} hands a Second Chance to ${game.byId(ev.targetId).name}`);
-      await wait(500);
-      break;
-
-    case 'discard-action':
-      toast(`${ACTIONS[ev.card.action].label} discarded — nobody to use it on`);
-      await wait(420);
-      break;
-
-    case 'stay':
-      if (player.isBot) sfx.stay();
-      renderAll();
-      setStatus(`${player.name} stays on ${ev.score}`);
-      await wait(430);
-      break;
-
-    case 'turn':
-      renderAll();
-      break;
-
-    case 'reshuffle':
-      toast('Deck reshuffled');
-      await wait(300);
-      break;
-
-    default:
-      break;
+    view.shownRound = null;
+    view.shownWinner = null;
+    scorer.selectedId = null;
+    go('room');
+    toast(`You're in — room ${code}`);
+  } catch (err) {
+    sfx.error();
+    error.textContent = err.message ?? 'Could not join that room';
+  } finally {
+    busy(btn, false);
   }
 }
 
-function markFatal(player, card) {
-  const map = state.cardEls.get(player.id);
-  const el = map?.get(card.id);
-  if (el) el.classList.add('is-fatal');
+async function resumeGame() {
+  try {
+    const ok = await store.resume();
+    if (!ok) {
+      $('home-resume').hidden = true;
+      return toast('That game has finished');
+    }
+    view.shownRound = store.state?.lastRound?.round ?? null;
+    view.shownWinner = store.state?.winnerId ?? null;
+    go('room');
+  } catch (err) {
+    toast(err.message ?? 'Could not rejoin');
+  }
 }
 
-function shake(el) {
-  if (!el) return;
-  el.classList.add('is-shaking');
-  setTimeout(() => el.classList.remove('is-shaking'), 520);
+function leaveRoom() {
+  store.leave();
+  closeAllModals();
+  $('home-resume').hidden = true;
+  go('home');
 }
 
-// ── targeting ─────────────────────────────────────────────────────────────
+async function shareRoom() {
+  const code = store.code;
+  if (!code) return;
+  const link = `${location.origin}${location.pathname}?room=${code}`;
+  const text = store.isOnline
+    ? `Join my Flip 7 game — code ${code}\n${link}`
+    : `Flip 7 room ${code}`;
 
-function promptTarget(req) {
-  return new Promise((resolve) => {
-    const game = state.game;
-    const verb = { freeze: 'Freeze', flip3: 'Flip Three on', gift: 'Give your spare shield to' }[
-      req.action
-    ];
-    state.awaitingTarget = { ...req, resolve };
-    setControls(false);
-    renderAll();
-
-    const hint = $('targeting');
-    hint.hidden = false;
-    hint.textContent =
-      req.targets.length === 1
-        ? `${verb} ${game.byId(req.targets[0]).name} — the only option. Tap to confirm.`
-        : `You drew ${ACTIONS[req.action === 'gift' ? 'chance' : req.action].label}. Tap a player to ${verb.toLowerCase()}.`;
-
-    if (req.action !== 'gift') sfx.count();
-    announce(hint.textContent);
-  });
+  if (store.isOnline && navigator.share) {
+    try {
+      await navigator.share({ title: 'Flip 7', text: `Join my Flip 7 game — code ${code}`, url: link });
+      return;
+    } catch {
+      /* dismissed — fall through to copying */
+    }
+  }
+  try {
+    await navigator.clipboard.writeText(store.isOnline ? link : code);
+    toast(store.isOnline ? 'Join link copied' : `Room code ${code} copied`);
+  } catch {
+    toast(`Room code: ${code}`);
+  }
 }
 
-function chooseTarget(targetId) {
-  const pending = state.awaitingTarget;
-  if (!pending || !pending.targets.includes(targetId)) return;
-  state.awaitingTarget = null;
-  $('targeting').hidden = true;
-  sfx.tap();
-  state.game.resolveTarget(targetId);
-  pending.resolve(); // the waiting drive() loop picks it up from here
-}
-
-// ── round & game end ──────────────────────────────────────────────────────
+// ── rounds ────────────────────────────────────────────────────────────────
 
 async function endRound() {
-  const game = state.game;
-  const you = game.byId('you');
-  bumpStat('rounds');
-  recordBest('bestRound', you.roundScore);
-  renderAll();
-  await wait(420);
+  const state = store.state;
+  if (!state || !store.isHost) return;
 
-  $('round-title').textContent = `Round ${game.round}`;
+  if (!roundStarted(state)) {
+    sfx.error();
+    return toast('No cards tapped yet');
+  }
+
+  const { paths } = endRoundUpdates(state);
+  sfx.count();
+  await store.update(paths);
+}
+
+async function rematch() {
+  if (!store.state) return;
+  closeAllModals();
+  if (!store.isHost) return toast('The host can start the next game');
+  view.shownWinner = null;
+  view.shownRound = null;
+  await store.update(rematchUpdates(store.state));
+  toast('Scores cleared — good luck');
+}
+
+// ── reacting to state ─────────────────────────────────────────────────────
+
+function onState(state) {
+  if (!state) return;
+
+  $('room-code').textContent = state.code ?? '····';
+  $('room-meta').textContent = `round ${state.round} · to ${state.target}`;
+  scorer.render();
+
+  // A table of one needs telling what to do next — inline, not as a toast that
+  // covers the very code they're meant to read out.
+  const hint = $('room-hint');
+  const alone = playerList(state).length < 2;
+  hint.hidden = !alone;
+  if (alone) {
+    hint.textContent = store.isOnline
+      ? `Read out the code ${state.code} — players appear here as they join.`
+      : 'Add everyone at the table from the menu, then tap their cards as they land.';
+  }
+
+  // The host publishes the summary; every phone shows it when it appears.
+  const last = state.lastRound;
+  if (last && last.round !== view.shownRound && state.status !== 'finished') {
+    view.shownRound = last.round;
+    showRoundSummary(last);
+  }
+
+  if (state.status === 'finished' && state.winnerId && view.shownWinner !== state.winnerId) {
+    view.shownWinner = state.winnerId;
+    view.shownRound = state.lastRound?.round ?? view.shownRound;
+    showWinner(state);
+  }
+}
+
+function onSyncError(error) {
+  if (error?.code === 'room-missing') {
+    toast('That game has ended');
+    leaveRoom();
+    return;
+  }
+  toast(error?.message ?? 'Lost touch with the room');
+}
+
+function showRoundSummary(last) {
+  const state = store.state;
+  $('round-title').textContent = `Round ${last.round}`;
   fillScores(
     $('round-scores'),
-    game.players.map((p) => ({
-      name: p.name,
-      avatar: p.avatar,
-      delta: p.roundScore,
-      total: p.total,
-      busted: p.status === Status.BUSTED,
-      note: noteFor(game, p),
+    (last.results ?? []).map((r) => ({
+      name: r.name,
+      delta: r.delta,
+      total: r.total,
+      busted: r.busted,
+      note: noteFor(r),
     })),
-    game.targetScore,
+    state.target,
   );
-  const next = $('btn-next-round');
-  next.textContent = 'Next round';
-  delete next.dataset.mode;
+  $('btn-next-round').textContent = `Start round ${state.round}`;
   openModal('round');
   sfx.count();
 }
 
-async function endGame() {
-  const game = state.game;
-  const winner = game.winner;
-  const you = game.byId('you');
-  const youWon = winner.id === 'you';
+function showWinner(state) {
+  const winner = state.players?.[state.winnerId];
+  if (!winner) return;
+  const mine = state.winnerId === store.myId;
 
-  bumpStat('rounds');
-  recordBest('bestRound', you.roundScore);
-  recordBest('bestGame', you.total);
-  if (youWon) bumpStat('wins');
-  renderAll();
-  await wait(500);
-
-  $('over-title').textContent = youWon ? 'You win!' : `${winner.name} wins`;
-  $('over-sub').textContent = youWon
-    ? `${you.total} points in ${game.round} rounds. Nerves of steel.`
-    : `${winner.name} got to ${winner.total}. You finished on ${you.total}.`;
+  $('over-title').textContent = mine ? 'You win!' : `${winner.name} wins`;
+  $('over-sub').textContent = `${winner.total} points in ${(state.round ?? 2) - 1} rounds.`;
   fillScores(
     $('over-scores'),
-    game.players.map((p) => ({
+    standings(state).map((p) => ({
       name: p.name,
-      avatar: p.avatar,
-      delta: p.roundScore,
-      total: p.total,
-      winner: p.id === winner.id,
-      note: p.id === winner.id ? 'winner' : '',
+      delta: p.history?.at(-1) ?? 0,
+      total: p.total ?? 0,
+      winner: p.id === state.winnerId,
+      note: p.id === state.winnerId ? 'winner' : '',
     })),
-    game.targetScore,
+    state.target,
   );
 
-  const btn = $('btn-rematch');
-  btn.textContent = 'Rematch';
-  delete btn.dataset.mode;
+  $('btn-rematch').hidden = !store.isHost;
+  closeModal($('modal-round'));
   openModal('over');
-
-  if (youWon) {
+  if (mine) {
     sfx.win();
     celebrate();
   } else {
     sfx.lose();
   }
+  announce(`${winner.name} wins with ${winner.total}`);
 }
 
-function noteFor(game, player) {
-  if (player.status === Status.BUSTED) return 'busted';
-  if (player.status === Status.FLIP7) return 'Flip 7 · +15';
-  if (player.status === Status.FROZEN) return 'frozen';
-  const b = game.breakdown(player);
+function noteFor(result) {
+  if (result.busted) return 'busted';
+  if (result.flip7) return 'Flip 7 · +15';
   const bits = [];
-  if (b.doubled) bits.push('×2');
-  if (b.bonus) bits.push(`+${b.bonus}`);
+  if (result.doubled) bits.push('×2');
+  if (result.addMods?.length) bits.push(result.addMods.map((v) => `+${v}`).join(' '));
   return bits.join(' ');
 }
 
-// ── rendering the table ───────────────────────────────────────────────────
+// ── the players dialog (host) ─────────────────────────────────────────────
 
-function spotlight(player) {
-  // With one human the view never moves. Pass-and-play follows whoever is up.
-  const humans = state.game.players.filter((p) => !p.isBot);
-  if (humans.length <= 1) {
-    state.spotlightId = humans[0]?.id ?? player.id;
-  } else if (!player.isBot) {
-    state.spotlightId = player.id;
-  }
+let editRows = [];
+
+function paintMenu() {
+  $('menu-code').textContent = store.code ?? '····';
+  $('menu-status').textContent = store.isOnline
+    ? `${playerList(store.state).length} at the table · everyone on their own phone`
+    : 'Keeping score on this device only';
+  $('btn-manage').hidden = !store.isHost;
+  $('btn-share').hidden = !store.code;
 }
 
-function renderAll() {
-  const game = state.game;
-  if (!game) return;
-
-  $('hud-round').textContent = String(game.round);
-  $('hud-deck').textContent = String(game.deck.length);
-  $('targeting').hidden = !state.awaitingTarget;
-
-  const spot = game.byId(state.spotlightId) ?? game.players[0];
-  const pods = $('opponents');
-
-  // Opponent pods, in seat order, skipping whoever is in the spotlight.
-  const wanted = game.players.filter((p) => p.id !== spot.id);
-  if (pods.childElementCount !== wanted.length) {
-    pods.replaceChildren(...wanted.map((p) => buildPod(p)));
-  }
-  wanted.forEach((p, i) => renderPod(p, pods.children[i]));
-
-  renderSeat(spot);
-  renderControls(spot);
+function openPlayers() {
+  if (!store.isHost) return;
+  editRows = playerList(store.state).map((p) => ({ id: p.id, name: p.name, remove: false }));
+  renderPlayersModal();
+  closeModal($('modal-menu'));
+  openModal('players');
 }
 
-function buildPod(player) {
-  const el = document.createElement('div');
-  el.className = 'pod';
-  el.dataset.player = player.id;
-  el.innerHTML = `
-    <div class="pod__top">
-      <span class="pod__avatar"></span>
-      <span class="pod__name"></span>
-      <span class="pod__now"></span>
-    </div>
-    <div class="pod__meta">
-      <span class="pod__total"></span>
-      <span class="pod__state" hidden></span>
-    </div>
-    <div class="pod__hand"></div>`;
-  el.addEventListener('click', () => {
-    if (state.awaitingTarget?.targets.includes(player.id)) chooseTarget(player.id);
-  });
-  return el;
+function addPlayerRow() {
+  if (editRows.length >= 12) return toast('That is a lot of players');
+  editRows.push({ id: null, name: `Player ${editRows.length + 1}`, remove: false });
+  renderPlayersModal();
 }
 
-function renderPod(player, el) {
-  const game = state.game;
-  el.querySelector('.pod__avatar').textContent = player.avatar;
-  el.querySelector('.pod__name').textContent = player.name;
-  el.querySelector('.pod__now').textContent = String(game.scoreOf(player));
-  el.querySelector('.pod__total').textContent = `${player.total} total`;
+function renderPlayersModal() {
+  const host = $('players-namelist');
+  host.replaceChildren();
+  editRows.forEach((row, i) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'namerow';
 
-  const stateEl = el.querySelector('.pod__state');
-  const label = stateLabel(player);
-  stateEl.hidden = !label;
-  if (label) {
-    stateEl.textContent = label;
-    stateEl.dataset.state = player.status;
-  }
-
-  const isTurn =
-    player.status === Status.ACTIVE &&
-    game.request().type === 'move' &&
-    game.current?.id === player.id;
-  el.classList.toggle('is-turn', isTurn);
-  el.classList.toggle('is-out', player.status !== Status.ACTIVE);
-  el.classList.toggle('is-busted', player.status === Status.BUSTED);
-  const targetable = !!state.awaitingTarget?.targets.includes(player.id);
-  el.classList.toggle('is-target', targetable);
-  el.setAttribute('role', targetable ? 'button' : 'group');
-  el.setAttribute(
-    'aria-label',
-    `${player.name}, ${game.scoreOf(player)} this round, ${player.total} total${label ? `, ${label}` : ''}`,
-  );
-
-  renderHand(player, el.querySelector('.pod__hand'));
-}
-
-function renderSeat(player) {
-  const game = state.game;
-  const seat = $('seat');
-  // Rebuild when the spotlight moves, or when the round reset emptied the node.
-  if (seat.dataset.player !== player.id || !seat.querySelector('.hand')) {
-    seat.dataset.player = player.id;
-    seat.innerHTML = `
-      <div class="seat__top">
-        <span class="seat__avatar"></span>
-        <span class="seat__name"></span>
-        <span class="pips"></span>
-        <span class="seat__now"><span></span><small>this round</small></span>
-      </div>
-      <div class="hand"></div>`;
-    seat.addEventListener('click', () => {
-      const id = seat.dataset.player;
-      if (state.awaitingTarget?.targets.includes(id)) chooseTarget(id);
+    const input = document.createElement('input');
+    input.className = 'input';
+    input.type = 'text';
+    input.maxLength = 14;
+    input.value = row.name;
+    input.autocomplete = 'off';
+    input.setAttribute('aria-label', `Player ${i + 1} name`);
+    input.addEventListener('input', () => {
+      row.name = input.value;
     });
-  }
 
-  seat.querySelector('.seat__avatar').textContent = player.avatar;
-  seat.querySelector('.seat__name').textContent = player.isBot ? player.name : 'You';
-  seat.querySelector('.seat__now span').textContent = String(game.scoreOf(player));
-  renderPips(seat.querySelector('.pips'), player.numbers.length);
+    const del = document.createElement('button');
+    del.className = 'namerow__del';
+    del.type = 'button';
+    del.textContent = '×';
+    del.setAttribute('aria-label', `Remove ${row.name}`);
+    // The host has to stay at their own table.
+    del.disabled = row.id === store.myId || editRows.length <= 1;
+    del.addEventListener('click', () => {
+      editRows.splice(i, 1);
+      renderPlayersModal();
+    });
 
-  const isTurn = game.request().type === 'move' && game.current?.id === player.id;
-  seat.classList.toggle('is-turn', isTurn);
-  seat.classList.toggle('is-busted', player.status === Status.BUSTED);
-  const targetable = !!state.awaitingTarget?.targets.includes(player.id);
-  seat.classList.toggle('is-target', targetable);
-
-  renderHand(player, seat.querySelector('.hand'), { big: true });
-}
-
-/** Reconcile a hand so only genuinely new cards animate in. */
-function renderHand(player, host, { big = false } = {}) {
-  let map = state.cardEls.get(player.id);
-  if (!map) {
-    map = new Map();
-    state.cardEls.set(player.id, map);
-  }
-
-  const cards = [
-    ...player.numbers,
-    ...player.modifiers,
-    ...(player.secondChance ? [player.secondChance] : []),
-    ...(player.bustCard ? [player.bustCard] : []),
-  ];
-
-  if (!cards.length) {
-    if (big) {
-      const empty = document.createElement('p');
-      empty.className = 'hand__empty';
-      empty.textContent = 'No cards yet';
-      host.replaceChildren(empty);
-    } else {
-      host.replaceChildren();
-    }
-    map.clear();
-    return;
-  }
-
-  host.querySelector('.hand__empty')?.remove();
-
-  const seen = new Set();
-  for (const card of cards) {
-    seen.add(card.id);
-    let el = map.get(card.id);
-    if (!el) {
-      el = createCard(card);
-      map.set(card.id, el);
-      host.append(el);
-      if (host.isConnected) dealFrom(el, $('deck-pile'));
-    } else if (el.parentElement !== host) {
-      host.append(el);
-    }
-    if (player.bustCard && card.id === player.bustCard.id) el.classList.add('is-fatal');
-    el.classList.toggle('is-spent', player.status === Status.BUSTED);
-  }
-
-  for (const [id, el] of map) {
-    if (!seen.has(id)) {
-      el.remove();
-      map.delete(id);
-    }
-  }
-
-  // Keep the DOM in hand order without re-creating anything.
-  cards.forEach((card, i) => {
-    const el = map.get(card.id);
-    if (host.children[i] !== el) host.insertBefore(el, host.children[i] ?? null);
+    wrap.append(input, del);
+    host.append(wrap);
   });
 }
 
-function stateLabel(player) {
-  switch (player.status) {
-    case Status.BUSTED:
-      return 'bust';
-    case Status.STAYED:
-      return 'stay';
-    case Status.FROZEN:
-      return 'frozen';
-    case Status.FLIP7:
-      return 'flip 7';
-    default:
-      return '';
+async function savePlayers() {
+  const state = store.state;
+  if (!state || !store.isHost) return;
+
+  const kept = new Set(editRows.filter((r) => r.id).map((r) => r.id));
+  const paths = {};
+
+  for (const p of playerList(state)) {
+    if (!kept.has(p.id) && p.id !== store.myId) paths[`players/${p.id}`] = null;
   }
-}
+  editRows.forEach((row, order) => {
+    const name = row.name.trim() || `Player ${order + 1}`;
+    if (row.id) {
+      paths[`players/${row.id}/name`] = name;
+      paths[`players/${row.id}/order`] = order;
+    }
+  });
 
-function renderControls(spot) {
-  const game = state.game;
-  const req = game.request();
-  const yourTurn = req.type === 'move' && !game.byId(req.playerId).isBot;
-  const player = yourTurn ? game.byId(req.playerId) : spot;
-
-  const standing = game.scoreOf(player);
-  $('stay-sub').textContent = `bank ${standing}`;
-
-  const risk = bustChance(game, player);
-  const hit = $('btn-hit');
-  const show = settings.riskMeter && player.status === Status.ACTIVE;
-  hit.dataset.band = riskBand(risk);
-  hit.querySelector('.risk__fill').style.width = show ? `${Math.round(risk * 100)}%` : '0%';
-  $('risk').hidden = !show;
-
-  if (!show) {
-    $('hit-sub').textContent = player.secondChance ? 'shield up' : 'one more card';
-  } else if (player.secondChance) {
-    $('hit-sub').textContent = 'shielded — no risk';
-  } else {
-    $('hit-sub').textContent = `${Math.round(risk * 100)}% bust risk`;
+  await store.update(paths);
+  // New rows need ids, which addPlayer allocates.
+  for (const row of editRows.filter((r) => !r.id)) {
+    await store.addPlayer(row.name.trim() || 'Player');
   }
-}
 
-function setControls(on) {
-  $('btn-hit').disabled = !on;
-  $('btn-stay').disabled = !on;
-}
-
-function seatOrPod(player) {
-  if (player.id === state.spotlightId) return $('seat');
-  return $('opponents').querySelector(`[data-player="${player.id}"]`);
+  closeModal($('modal-players'));
+  sfx.tap();
 }
 
 boot();

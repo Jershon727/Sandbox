@@ -1,0 +1,74 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+
+    "rooms": {
+      "$code": {
+        "//": "Knowing the four-character code is what gets you into a room. That is the same trust model as reading the code out at the table, and the reason rooms are disposable: start a new one and the old code stops mattering. The validation below is about keeping a stray client from writing junk, not about keeping players apart.",
+
+        ".read": "$code.length === 4",
+        ".write": "$code.length === 4",
+        ".validate": "newData.hasChildren(['code', 'target', 'round', 'hostId'])",
+
+        "code": { ".validate": "newData.isString() && newData.val() === $code" },
+        "createdAt": { ".validate": "newData.isNumber()" },
+        "target": {
+          ".validate": "newData.isNumber() && newData.val() >= 10 && newData.val() <= 5000"
+        },
+        "round": {
+          ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 999"
+        },
+        "hostId": { ".validate": "newData.isString() && newData.val().length <= 40" },
+        "status": {
+          ".validate": "newData.isString() && (newData.val() === 'playing' || newData.val() === 'finished')"
+        },
+        "winnerId": { ".validate": "newData.isString() || newData.val() === null" },
+
+        "lastRound": {
+          "round": { ".validate": "newData.isNumber()" },
+          "results": { "$i": { ".validate": true } }
+        },
+
+        "players": {
+          "$playerId": {
+            ".validate": "newData.hasChildren(['name'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 20"
+            },
+            "order": { ".validate": "newData.isNumber()" },
+            "total": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "lastSeen": { ".validate": "newData.isNumber()" },
+            "history": {
+              "$i": { ".validate": "newData.isNumber()" }
+            },
+            "hand": {
+              "numbers": {
+                "$i": {
+                  ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 12"
+                }
+              },
+              "mods": {
+                "$i": {
+                  "op": {
+                    ".validate": "newData.val() === 'add' || newData.val() === 'mul'"
+                  },
+                  "value": { ".validate": "newData.isNumber()" },
+                  "$other": { ".validate": false }
+                }
+              },
+              "chance": { ".validate": "newData.isBoolean()" },
+              "busted": { ".validate": "newData.isBoolean()" },
+              "$other": { ".validate": false }
+            },
+            "$other": { ".validate": false }
+          }
+        },
+
+        "$other": { ".validate": false }
+      }
+    }
+  }
+}

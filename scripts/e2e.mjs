@@ -1,6 +1,10 @@
 /**
- * Browser-driven checks for the flows the unit tests can't reach: the driver
- * loop, human targeting, and the score helper's persistence.
+ * Browser checks for the things unit tests can't reach: two phones in the same
+ * room, live sync, and scores surviving a refresh.
+ *
+ * Both "phones" run against the same-device backend, which implements exactly
+ * the same interface as Firebase — so this exercises the real sync logic, just
+ * over a BroadcastChannel instead of a socket.
  *
  *   node scripts/serve.mjs &   node scripts/e2e.mjs
  */
@@ -17,199 +21,231 @@ function check(name, ok, detail = '') {
 }
 
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-const page = await browser.newPage({ viewport: { width: 414, height: 896 } });
+// One context: two tabs sharing storage, the way two phones share a room.
+const context = await browser.newContext({ viewport: { width: 414, height: 896 } });
 
 const errors = [];
-page.on('pageerror', (e) => errors.push(e.message));
-page.on('console', (m) => {
-  // The Google Fonts request is blocked in CI sandboxes; that isn't our bug.
-  if (m.type() === 'error' && !/ERR_(CONNECTION|NAME|BLOCKED|INTERNET)/.test(m.text())) {
-    errors.push(m.text());
-  }
-});
-
-await page.goto(BASE, { waitUntil: 'domcontentloaded' });
-await page.emulateMedia({ reducedMotion: 'reduce' });
-
-// ── the game drives itself to a finished round ────────────────────────────
-await page.click('[data-goto="setup"]');
-await page.click('#btn-start');
-await page.waitForFunction(() => window.__flip7?.game?.round === 1, null, { timeout: 5000 });
-check('game starts', true);
-
-/** Put a specific card on top of the deck. */
-const stack = (card) =>
-  page.evaluate((c) => {
-    window.__flip7.game.deck.push({ id: `e2e${Math.random()}`, ...c });
-  }, card);
-
-const yourTurn = () =>
-  page.waitForFunction(
-    () => {
-      const s = window.__flip7;
-      const r = s.game?.request();
-      return r?.type === 'move' && !s.game.byId(r.playerId).isBot;
-    },
-    null,
-    { timeout: 20000 },
-  );
-
-// ── human targeting must not stall the driver ─────────────────────────────
-await yourTurn();
-await stack({ kind: 'action', action: 'freeze' });
-await page.click('#btn-hit');
-await page.waitForSelector('#targeting:not([hidden])', { timeout: 8000 });
-check('drawing Freeze asks you to pick a target', true);
-
-const targets = await page.locator('.pod.is-target, .seat.is-target').count();
-check('targets are highlighted', targets > 0, `${targets} highlighted`);
-
-await page.locator('.pod.is-target, .seat.is-target').first().click();
-await page.waitForFunction(() => document.getElementById('targeting').hidden, null, {
-  timeout: 5000,
-});
-
-// The real regression: does the game keep running after you choose?
-const recovered = await page
-  .waitForFunction(
-    () => {
-      const s = window.__flip7;
-      if (!s.game) return false;
-      const r = s.game.request();
-      return r.type !== 'target';
-    },
-    null,
-    { timeout: 8000 },
-  )
-  .then(() => true)
-  .catch(() => false);
-check('the game continues after you pick a target', recovered);
-
-const frozen = await page.evaluate(
-  () => window.__flip7.game.players.filter((p) => p.status === 'frozen').length,
-);
-check('the target is frozen', frozen === 1, `${frozen} frozen`);
-
-// ── a Flip Three resolves three flips ────────────────────────────────────
-const advanced = await page
-  .waitForFunction(
-    () => {
-      const s = window.__flip7;
-      const r = s.game?.request();
-      return r?.type === 'move' || r?.type === 'round-over';
-    },
-    null,
-    { timeout: 20000 },
-  )
-  .then(() => true)
-  .catch(() => false);
-check('play resumes to a normal turn', advanced);
-
-// ── bust risk is shown and matches the engine ────────────────────────────
-if (await page.locator('#btn-hit').isEnabled()) {
-  const shown = await page.textContent('#hit-sub');
-  const actual = await page.evaluate(() => {
-    const s = window.__flip7;
-    const r = s.game.request();
-    const p = s.game.byId(r.playerId);
-    const pool = s.game.deck;
-    if (p.secondChance) return null;
-    const owned = new Set(p.numbers.map((c) => c.value));
-    const bad = pool.filter((c) => c.kind === 'number' && owned.has(c.value)).length;
-    return Math.round((bad / pool.length) * 100);
+function guard(page, label) {
+  page.on('pageerror', (e) => errors.push(`${label}: ${e.message}`));
+  page.on('console', (m) => {
+    if (m.type() === 'error' && !/ERR_(CONNECTION|NAME|BLOCKED|INTERNET)|Failed to load resource/.test(m.text())) {
+      errors.push(`${label}: ${m.text()}`);
+    }
   });
-  check(
-    'the risk meter matches the deck',
-    actual === null || shown.includes(`${actual}%`),
-    `showed "${shown}", deck says ${actual}%`,
-  );
 }
 
-// ── the round finishes and the summary appears ────────────────────────────
-for (let i = 0; i < 60; i++) {
-  if (await page.locator('#modal-round').isVisible()) break;
-  if (await page.locator('#targeting').isVisible()) {
-    await page.locator('.pod.is-target, .seat.is-target').first().click();
-  } else if (await page.locator('#btn-hit').isEnabled()) {
-    await page.click('#btn-hit');
+const host = await context.newPage();
+guard(host, 'host');
+await host.goto(BASE, { waitUntil: 'domcontentloaded' });
+await host.emulateMedia({ reducedMotion: 'reduce' });
+await host.waitForFunction(() => !!window.__flip7);
+
+// ── host a room ───────────────────────────────────────────────────────────
+await host.click('[data-goto="host"]');
+await host.fill('#host-name', 'Jack');
+await host.click('#btn-host');
+await host.waitForFunction(() => window.__flip7.store.code, null, { timeout: 5000 });
+
+const code = await host.evaluate(() => window.__flip7.store.code);
+check('hosting creates a room with a code', /^[A-Z2-9]{4}$/.test(code), code);
+check('the host is the host', await host.evaluate(() => window.__flip7.store.isHost));
+check(
+  'the code is on screen',
+  (await host.textContent('#room-code')) === code,
+  await host.textContent('#room-code'),
+);
+
+// ── a second phone joins ──────────────────────────────────────────────────
+const guest = await context.newPage();
+guard(guest, 'guest');
+// Both tabs share this context's localStorage, so without this the guest would
+// auto-rejoin as the host. A real second phone starts with no membership; drop
+// it once, on first load only, so the later reload still tests rejoining.
+await guest.addInitScript(() => {
+  if (!sessionStorage.getItem('e2e-fresh-device')) {
+    sessionStorage.setItem('e2e-fresh-device', '1');
+    localStorage.removeItem('flip7:membership');
   }
-  await page.waitForTimeout(400);
-}
-check('a round ends with a summary', await page.locator('#modal-round').isVisible());
+});
+await guest.goto(`${BASE}?room=${code}`, { waitUntil: 'domcontentloaded' });
+await guest.emulateMedia({ reducedMotion: 'reduce' });
+await guest.waitForFunction(() => !!window.__flip7);
+check(
+  'a shared link pre-fills the code',
+  (await guest.inputValue('#join-code')) === code,
+  await guest.inputValue('#join-code'),
+);
 
-await page.click('#btn-next-round');
-await page.waitForFunction(() => window.__flip7.game.round === 2, null, { timeout: 8000 });
-check('the next round starts', true);
+await guest.fill('#join-name', 'Sam');
+await guest.click('#btn-join');
+await guest.waitForFunction(() => window.__flip7.store.code, null, { timeout: 5000 });
+check('the second phone is in the room', await guest.evaluate(() => !!window.__flip7.store.state));
+check('and is not the host', !(await guest.evaluate(() => window.__flip7.store.isHost)));
 
-// ── score helper ─────────────────────────────────────────────────────────
-await page.click('#screen-game [data-open="pause"]');
-await page.click('#btn-quit');
-await page.click('[data-goto="tally"]');
-await page.click('#tally-start');
+// The host should see them arrive without doing anything.
+const sawJoin = await host
+  .waitForFunction(() => document.querySelectorAll('#standings .stand').length === 2, null, {
+    timeout: 5000,
+  })
+  .then(() => true)
+  .catch(() => false);
+check('the host sees them join, live', sawJoin);
 
-const tap = (label) => page.click(`#tally-pad button[aria-label="${label}"]`);
-for (const n of [4, 9, 12]) await tap(`Add a ${n}`);
-await tap('Times two');
-await tap('Plus 10');
+// ── tapping cards syncs both ways ─────────────────────────────────────────
+const tap = (page, label) => page.click(`#pad button[aria-label="${label}"]`);
+
+for (const n of [4, 9, 12]) await tap(guest, `Add a ${n}`);
+await tap(guest, 'Times two');
+await tap(guest, 'Plus 10');
+
 check(
   'the calculator applies x2 before the + modifier',
-  (await page.textContent('#tally-score')) === '60',
-  `showed ${await page.textContent('#tally-score')}`,
+  (await guest.textContent('#round-score')) === '60',
+  `showed ${await guest.textContent('#round-score')}`,
 );
 check(
   'it shows the arithmetic',
-  (await page.textContent('#tally-formula')) === '(4 + 9 + 12) × 2 + 10 = 60',
-  await page.textContent('#tally-formula'),
+  (await guest.textContent('#formula')) === '(4 + 9 + 12) × 2 + 10 = 60',
+  await guest.textContent('#formula'),
 );
 
-// a held number is flagged, and tapping it again is the bust
+const hostSawGuestScore = await host
+  .waitForFunction(
+    () =>
+      [...document.querySelectorAll('#standings .stand')].some(
+        (row) =>
+          row.querySelector('.stand__name')?.textContent.startsWith('Sam') &&
+          row.querySelector('.stand__round')?.textContent === '+60',
+      ),
+    null,
+    { timeout: 5000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check("the host's phone shows Sam's live round score", hostSawGuestScore);
+
+// The host taps their own hand; the guest should see it.
+for (const n of [7, 8]) await tap(host, `Add a ${n}`);
+const guestSawHostScore = await guest
+  .waitForFunction(
+    () =>
+      [...document.querySelectorAll('#standings .stand')].some(
+        (row) =>
+          row.querySelector('.stand__name')?.textContent.startsWith('Jack') &&
+          row.querySelector('.stand__round')?.textContent === '+15',
+      ),
+    null,
+    { timeout: 5000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check("Sam's phone shows Jack's live round score", guestSawHostScore);
+
+// ── you can't score for somebody else ─────────────────────────────────────
+await guest.click('#standings .stand:has(.stand__name:text-matches("^Jack"))');
 check(
-  'held numbers are marked on the keypad',
-  await page.locator('#tally-pad button[aria-label^="9 —"]').count() === 1,
-);
-await tap('9 — you already have this, tapping again busts you');
-check(
-  'tapping a duplicate busts the hand',
-  (await page.textContent('#tally-score')) === '0' &&
-    (await page.locator('#tally-flag').textContent()) === 'Busted',
+  'a guest cannot edit another player',
+  (await guest.textContent('#whose')) === 'Your hand',
+  await guest.textContent('#whose'),
 );
 
-// undo walks it back
-await page.click('#tally-undo');
-check('undo restores the hand', (await page.textContent('#tally-score')) === '60');
-
-// a Second Chance absorbs the duplicate instead
-await page.click('#tally-pad button[aria-label="Second Chance"]');
-await tap('9 — you already have this, tapping again busts you');
+// ── busting, saving, undo ─────────────────────────────────────────────────
+await tap(guest, '9 — you already have this, tapping again busts you');
 check(
-  'a Second Chance absorbs the duplicate',
-  (await page.textContent('#tally-score')) === '60',
-  `showed ${await page.textContent('#tally-score')}`,
+  'a duplicate busts the hand',
+  (await guest.textContent('#round-score')) === '0' &&
+    (await guest.textContent('#flag')) === 'Busted',
+);
+const hostSawBust = await host
+  .waitForFunction(
+    () =>
+      [...document.querySelectorAll('#standings .stand')].some(
+        (row) =>
+          row.querySelector('.stand__name')?.textContent.startsWith('Sam') &&
+          row.querySelector('.stand__round')?.textContent === 'bust',
+      ),
+    null,
+    { timeout: 5000 },
+  )
+  .then(() => true)
+  .catch(() => false);
+check('the table sees the bust immediately', hostSawBust);
+
+await guest.click('#btn-undo');
+check('undo walks the bust back', (await guest.textContent('#round-score')) === '60');
+
+await guest.click('#pad button[aria-label="Second Chance"]');
+await tap(guest, '9 — you already have this, tapping again busts you');
+check(
+  'a Second Chance absorbs the duplicate instead',
+  (await guest.textContent('#round-score')) === '60',
+  `showed ${await guest.textContent('#round-score')}`,
 );
 
-// scores survive a reload — the thing that must never break at a real table
-await page.click('#tally-end');
-await page.waitForSelector('#modal-round:not([hidden])');
-const bankedTotal = await page.evaluate(
-  () => JSON.parse(localStorage.getItem('flip7:tally')).players[0].total,
+// ── only the host ends the round ──────────────────────────────────────────
+check('the guest has no End round button', await guest.locator('#btn-end-round').isHidden());
+check('and is told what it is waiting for', await guest.locator('#waiting').isVisible());
+check('the host does have one', await host.locator('#btn-end-round').isVisible());
+
+await host.click('#btn-end-round');
+await host.waitForSelector('#modal-round:not([hidden])', { timeout: 5000 });
+check('the host gets the round summary', true);
+
+const guestSummary = await guest
+  .waitForSelector('#modal-round:not([hidden])', { timeout: 5000 })
+  .then(() => true)
+  .catch(() => false);
+check('every phone gets the same summary', guestSummary);
+
+await guest.click('#modal-round [data-close]');
+await host.click('#modal-round [data-close]');
+
+const totals = await host.evaluate(() =>
+  Object.values(window.__flip7.store.state.players).map((p) => `${p.name}:${p.total}`).sort(),
 );
-await page.reload({ waitUntil: 'domcontentloaded' });
-await page.click('[data-goto="tally"]');
-const afterReload = await page.textContent('.rail__tab .rail__total');
+check('both hands banked into totals', JSON.stringify(totals) === '["Jack:15","Sam:60"]', totals.join(' '));
+check('the round advanced for everyone', (await guest.textContent('#room-meta')).includes('round 2'));
 check(
-  'the session survives a reload',
-  Number(afterReload) === bankedTotal && bankedTotal === 60,
-  `banked ${bankedTotal}, reloaded ${afterReload}`,
+  'hands were cleared',
+  (await guest.textContent('#round-score')) === '0',
+  await guest.textContent('#round-score'),
 );
 
-// ── flip 7 in the calculator ─────────────────────────────────────────────
-for (const n of [1, 2, 3, 4, 5, 6, 7]) await tap(`Add a ${n}`);
+// ── a refresh rejoins rather than losing the game ─────────────────────────
+await guest.reload({ waitUntil: 'domcontentloaded' });
+await guest.waitForFunction(() => window.__flip7?.store?.code, null, { timeout: 6000 });
 check(
-  'seven uniques scores the Flip 7 bonus',
-  (await page.textContent('#tally-score')) === '43',
-  `showed ${await page.textContent('#tally-score')}`,
+  'reopening the app goes straight back into the room',
+  await guest.locator('#screen-room').isVisible(),
 );
-check('and is called out', (await page.locator('#tally-flag').textContent()) === 'Flip 7!');
+const resumedTotal = await guest.evaluate(
+  () => window.__flip7.store.state.players[window.__flip7.store.myId].total,
+);
+check('a refresh rejoins with the score intact', resumedTotal === 60, `total ${resumedTotal}`);
+
+// ── winning ───────────────────────────────────────────────────────────────
+await host.evaluate(() => {
+  const s = window.__flip7.store;
+  return s.update({ [`players/${s.myId}/total`]: 195 });
+});
+for (const n of [11, 12] ) await tap(host, `Add a ${n}`);
+await host.click('#btn-end-round');
+const wonHost = await host
+  .waitForSelector('#modal-over:not([hidden])', { timeout: 5000 })
+  .then(() => true)
+  .catch(() => false);
+check('passing the target ends the game', wonHost);
+check(
+  'the winner is named on every phone',
+  await guest
+    .waitForFunction(() => {
+      const el = document.querySelector('#modal-over');
+      return el && !el.hidden && document.querySelector('#over-title')?.textContent.includes('Jack');
+    }, null, { timeout: 5000 })
+    .then(() => true)
+    .catch(() => false),
+);
+check('only the host is offered a rematch', await guest.locator('#btn-rematch').isHidden());
 
 await browser.close();
 

@@ -6,7 +6,7 @@
  * quietly refresh it in the background.
  */
 
-const CACHE = 'flip7-v1';
+const CACHE = 'flip7-v2';
 
 const SHELL = [
   '.',
@@ -14,19 +14,20 @@ const SHELL = [
   'css/styles.css',
   'icon.svg',
   'manifest.webmanifest',
+  'firebase-config.js',
   'js/main.js',
-  'js/engine.js',
+  'js/room.js',
+  'js/store.js',
+  'js/sync-local.js',
+  'js/scorer.js',
   'js/cards.js',
   'js/scoring.js',
-  'js/odds.js',
-  'js/ai.js',
   'js/rng.js',
   'js/sound.js',
   'js/fx.js',
   'js/views.js',
   'js/storage.js',
   'js/cardview.js',
-  'js/tally.js',
 ];
 
 self.addEventListener('install', (event) => {

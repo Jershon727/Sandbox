@@ -2,14 +2,15 @@
   "name": "flip7",
   "version": "1.0.0",
   "private": true,
-  "description": "Flip 7 — a push-your-luck card game for the browser",
+  "description": "Flip 7 \u2014 a shared scorekeeper for playing with real cards",
   "type": "module",
   "scripts": {
     "test": "node --test \"tests/**/*.test.mjs\"",
     "test:e2e": "node scripts/e2e.mjs",
     "shots": "node scripts/shots.mjs",
     "start": "node scripts/serve.mjs",
-    "deploy": "firebase deploy --only hosting"
+    "deploy": "firebase deploy --only database,hosting",
+    "bundle": "node scripts/bundle.mjs"
   },
   "devDependencies": {
     "playwright": "^1.56.1"

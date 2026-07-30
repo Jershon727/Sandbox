@@ -12,111 +12,109 @@ const BASE = process.env.BASE ?? 'http://localhost:5173';
 await mkdir(OUT, { recursive: true });
 
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium' });
-const page = await browser.newPage({
+const context = await browser.newContext({
   viewport: { width: 414, height: 896 },
   deviceScaleFactor: 2,
+  colorScheme: 'dark',
 });
 
 const problems = [];
-page.on('console', (msg) => {
-  if (msg.type() === 'error') problems.push(`console: ${msg.text()}`);
-});
-page.on('pageerror', (err) => problems.push(`pageerror: ${err.message}`));
+function guard(page, label) {
+  page.on('console', (m) => {
+    if (m.type() === 'error') problems.push(`${label}: ${m.text()}`);
+  });
+  page.on('pageerror', (e) => problems.push(`${label} pageerror: ${e.message}`));
+}
 
-const shot = async (name) => {
+const host = await context.newPage();
+guard(host, 'host');
+const shot = async (page, name) => {
   await page.screenshot({ path: `${OUT}/${name}.png` });
   console.log(`  ${name}.png`);
 };
 
-await page.goto(BASE, { waitUntil: 'networkidle' });
-// Motion off makes the captures deterministic.
-await page.emulateMedia({ reducedMotion: 'reduce' });
-await page.waitForTimeout(300);
-await shot('01-home');
+await host.goto(BASE, { waitUntil: 'domcontentloaded' });
+await host.emulateMedia({ reducedMotion: 'reduce' });
+await host.waitForFunction(() => !!window.__flip7);
+await shot(host, '01-home');
 
-// ── the game ──────────────────────────────────────────────────────────────
-await page.click('[data-goto="setup"]');
-await page.waitForTimeout(200);
-await shot('02-setup');
+await host.click('[data-goto="host"]');
+await host.fill('#host-name', 'Jack');
+await host.waitForTimeout(150);
+await shot(host, '02-host-setup');
 
-await page.click('#btn-start');
-await page.waitForTimeout(2600);
-await shot('03-game-early');
+await host.click('#btn-host');
+await host.waitForFunction(() => window.__flip7.store.code);
+const code = await host.evaluate(() => window.__flip7.store.code);
 
-// Play a handful of turns so the table fills up.
-for (let i = 0; i < 5; i++) {
-  const hit = page.locator('#btn-hit');
-  if (await hit.isEnabled()) {
-    await hit.click();
-    await page.waitForTimeout(1500);
-  } else {
-    await page.waitForTimeout(900);
-  }
-}
-await shot('04-game-mid');
-
-// Play on until a round actually finishes, so the summary gets captured.
-for (let i = 0; i < 40; i++) {
-  if (await page.locator('#modal-round').isVisible()) break;
-  const hint = page.locator('#targeting');
-  if (await hint.isVisible()) {
-    await page.locator('.pod.is-target, .seat.is-target').first().click();
-    await page.waitForTimeout(1200);
-    continue;
-  }
-  const hit = page.locator('#btn-hit');
-  if (await hit.isEnabled()) await hit.click();
-  await page.waitForTimeout(1100);
-}
-if (await page.locator('#modal-round').isVisible()) await shot('04b-round-summary');
-else console.log('  (round did not finish in time)');
-
-// ── the score helper ──────────────────────────────────────────────────────
-await page.evaluate(() => {
-  document.querySelectorAll('.modal:not([hidden])').forEach((m) => (m.hidden = true));
+// A few friends, so the standings look like a real table.
+await host.evaluate(async () => {
+  const s = window.__flip7.store;
+  for (const name of ['Sam', 'Mo', 'Ada']) await s.addPlayer(name);
 });
-await page.click('#screen-game [data-open="pause"]');
-await page.waitForTimeout(150);
-await page.click('#btn-quit');
-await page.waitForTimeout(300);
-await page.click('[data-goto="tally"]');
-await page.waitForTimeout(250);
-await shot('05-tally-setup');
+await host.waitForTimeout(200);
 
-await page.click('#tally-start');
-await page.waitForTimeout(300);
+// Give everyone a plausible round in progress.
+await host.evaluate(async () => {
+  const s = window.__flip7.store;
+  const ids = Object.keys(s.state.players);
+  const hands = [
+    { numbers: [4, 9, 12], mods: [{ op: 'mul', value: 2 }, { op: 'add', value: 10 }], chance: false, busted: false },
+    { numbers: [7, 3, 11, 0], mods: [], chance: true, busted: false },
+    { numbers: [8, 5], mods: [], chance: false, busted: true },
+    { numbers: [12, 6, 1], mods: [{ op: 'add', value: 4 }], chance: false, busted: false },
+  ];
+  const paths = {};
+  ids.forEach((id, i) => {
+    paths[`players/${id}/hand`] = hands[i % hands.length];
+    paths[`players/${id}/total`] = [61, 88, 34, 120][i % 4];
+  });
+  await s.update(paths);
+});
+await host.waitForTimeout(350);
+await shot(host, '03-room-live');
 
-for (const n of ['4', '9', '12', '0']) {
-  await page.click(`#tally-pad button[aria-label="Add a ${n}"]`);
-  await page.waitForTimeout(120);
-}
-await page.click('#tally-pad button[aria-label="Times two"]');
-await page.waitForTimeout(120);
-await page.click('#tally-pad button[aria-label="Plus 10"]');
-await page.waitForTimeout(350);
-await shot('06-tally-hand');
+// The join screen on a second phone.
+const guest = await context.newPage();
+guard(guest, 'guest');
+await guest.addInitScript(() => localStorage.removeItem('flip7:membership'));
+await guest.goto(`${BASE}?room=${code}`, { waitUntil: 'domcontentloaded' });
+await guest.emulateMedia({ reducedMotion: 'reduce' });
+await guest.waitForFunction(() => !!window.__flip7);
+await guest.waitForTimeout(200);
+await shot(guest, '04-join');
 
-// ── reference sheet ───────────────────────────────────────────────────────
-await page.click('#screen-tally [data-goto="home"]');
-await page.waitForTimeout(250);
-await page.click('[data-open="rules"]');
-await page.waitForTimeout(350);
-await shot('07-rules');
+// Round summary, as everyone sees it.
+await host.click('#btn-end-round');
+await host.waitForSelector('#modal-round:not([hidden])');
+await host.waitForTimeout(300);
+await shot(host, '05-round-summary');
+await host.click('#modal-round [data-close]');
 
-await page.evaluate(() => document.querySelector('#modal-rules').setAttribute('hidden', ''));
-await page.click('[data-open="settings"]');
-await page.waitForTimeout(300);
-await shot('08-settings');
+// The menu, with the code to share.
+await host.click('[data-open="menu"]');
+await host.waitForTimeout(250);
+await shot(host, '06-menu');
+await host.click('#modal-menu [data-close]');
 
-// ── light theme ───────────────────────────────────────────────────────────
-await page.evaluate(() => {
+await host.click('#screen-room [data-open="rules"]');
+await host.waitForTimeout(300);
+await shot(host, '07-rules');
+await host.evaluate(() => document.querySelector('#modal-rules').setAttribute('hidden', ''));
+
+// Light theme.
+await host.click('[data-open="menu"]');
+await host.waitForTimeout(150);
+await host.click('#modal-menu [data-open="settings"]');
+await host.waitForTimeout(200);
+await host.evaluate(() => {
   const opts = [...document.querySelectorAll('#settings-opts .seg__opt')];
   opts.find((b) => b.textContent === 'Light')?.click();
 });
-await page.waitForTimeout(250);
-await page.evaluate(() => document.querySelector('#modal-settings').setAttribute('hidden', ''));
-await page.waitForTimeout(200);
-await shot('09-home-light');
+await host.waitForTimeout(200);
+await host.evaluate(() => document.querySelector('#modal-settings').setAttribute('hidden', ''));
+await host.waitForTimeout(200);
+await shot(host, '08-room-light');
 
 await browser.close();
 
