@@ -28,14 +28,21 @@ just stays in single-phone mode and tells you so.
 2. **Build → Realtime Database → Create Database.** Any region is fine.
 3. **Project settings → General → Your apps.** Add a web app if there isn't one,
    then copy the config object.
-4. Paste those values into `public/firebase-config.js`.
-5. Deploy:
+4. Paste that snippet into `npm run set-config` (then Ctrl-D). It writes
+   `public/firebase-config.js` and points `.firebaserc` at the same project.
+
+   Worth using rather than editing the file by hand, because the console omits
+   `databaseURL` until a Realtime Database exists — so a config pasted before
+   step 2 looks complete but leaves online rooms dead. `set-config` catches
+   exactly that.
+5. Log in and deploy:
 
    ```bash
+   npx firebase login
    npm run deploy
    ```
 
-   That runs `firebase deploy --only database,hosting`. The `database` part
+   `npm run deploy` runs `firebase deploy --only database,hosting`. The `database` part
    matters — it uploads `database.rules.json`. Without it the database keeps
    whatever rules it was created with, which is either locked (nothing works) or
    wide open (anything works).

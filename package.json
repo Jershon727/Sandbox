@@ -12,7 +12,8 @@
     "deploy": "node scripts/check-config.mjs && firebase deploy --only database,hosting",
     "bundle": "node scripts/bundle.mjs",
     "check-config": "node scripts/check-config.mjs",
-    "deploy:offline": "node scripts/check-config.mjs --allow-offline && firebase deploy --only hosting"
+    "deploy:offline": "node scripts/check-config.mjs --allow-offline && firebase deploy --only hosting",
+    "set-config": "node scripts/set-config.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.25.0",
