@@ -20,8 +20,15 @@ fallback whenever Firebase isn't configured.
 
 ## Turning on live sync
 
-Online rooms need a Firebase Realtime Database. The app works without one — it
-just stays in single-phone mode and tells you so.
+There are two ways to sync phones, and the app uses whichever is configured:
+
+- **Your own relay** — a small WebSocket server in this repo. See
+  [Running your own relay](#running-your-own-relay). No Google account.
+- **Firebase Realtime Database** — no server to run, but a project to set up.
+
+With neither, the app stays in single-phone mode and says so.
+
+### Firebase
 
 1. In the [Firebase console](https://console.firebase.google.com), open your
    project (or make one).
@@ -98,13 +105,58 @@ Rooms are not cleaned up automatically. If you play a lot, delete old ones from
 the console occasionally, or add a scheduled function to drop rooms older than a
 day.
 
+## Running your own relay
+
+The relay is `server/relay.mjs`: one small WebSocket server that holds each room
+and forwards updates. It borrows `applyPaths` from the app's own `room.js`, so the
+server and the browsers can't disagree about what an update means. Nothing about
+Flip 7 is encoded in it beyond that.
+
+Locally:
+
+```bash
+npm run relay        # → ws://localhost:8787
+```
+
+Then point a device at it without editing any files:
+
+```js
+localStorage.setItem('flip7:relay', 'ws://localhost:8787')
+```
+
+To deploy, use the `Dockerfile` — Fly, Render, Railway or a VPS will all run it
+as-is, and it respects `PORT`. Then put the address in `public/relay-config.js`:
+
+```js
+export const relayUrl = 'wss://flip7-relay.fly.dev';
+```
+
+Use `wss://`, not `ws://`: a page served over https can't open a plain socket.
+
+**Rooms survive a restart.** They're saved to `ROOM_STORE` (a JSON file, written
+atomically) and reloaded on boot, because hosting platforms restart containers and
+losing a game halfway through the evening would undo the point of having a relay.
+Mount a volume at `/data` to keep them across redeploys as well. Rooms idle for
+12 hours are dropped.
+
+There is nothing secret in the relay address. Knowing it only lets you join a room
+whose four-character code you already have — the same trust model as reading the
+code out at the table. The limits in `LIMITS` (rooms, room size, sockets per room,
+message size) are there so one bad client can't sink the box; all are
+environment-overridable.
+
+**Relay or Firebase?** Whichever is configured. If both are, the relay wins —
+it's the one you host. The menu names which is in use.
+
 ## Running it locally
 
 ```bash
 npm install        # only needed for the browser-driven checks
 npm start          # → http://localhost:5173
-npm test           # scoring and room logic
+npm test           # scoring, room logic and the Bust-O-meter
 npm run test:e2e   # two phones in one room, in a real browser
+npm run test:relay # two separate devices over a real WebSocket relay
+npm run relay      # the relay on its own → ws://localhost:8787
 ```
 
 There is no build step. `public/` is the app: plain ES modules, one stylesheet,
@@ -125,6 +177,7 @@ public/
     room.js             room shape + the pure functions over it
     store.js            the live room: identity, presence, permissions
     sync-local.js       same-device backend (localStorage + BroadcastChannel)
+    sync-relay.js       WebSocket backend, loaded on demand
     sync-firebase.js    Realtime Database backend, loaded on demand
     scorer.js           standings, the hand, the keypad
     main.js             screens, hosting, joining, the round lifecycle
@@ -137,10 +190,14 @@ public/
     storage.js          preferences
     odds.js             the Bust-O-meter's maths and the recommendation
   sw.js                 app-shell service worker, so it opens offline
+  relay-config.js       your relay's address
+server/
+  relay.mjs             the relay: rooms in memory, saved across restarts
 tests/                  node:test suites
 scripts/
   serve.mjs             dependency-free dev server
   e2e.mjs               drives two pages through a shared room
+  e2e-relay.mjs         two separate browser contexts over a real relay
   set-config.mjs        turns a pasted Firebase config into firebase-config.js
   check-config.mjs      pre-deploy guard
   bundle.mjs            single-file build
@@ -154,11 +211,18 @@ new copy of the room. Two people tapping at the same instant touch different
 paths, so neither can clobber the other. The host's "end round" is one atomic
 multi-path write, so nobody sees half a round banked.
 
-`sync-local.js` and `sync-firebase.js` implement the same interface, and
-`applyPaths` in `room.js` reproduces Firebase's merge semantics locally. That's
-what makes the sync logic testable: `npm run test:e2e` runs two real browser
-pages through a shared room over a BroadcastChannel, exercising the same code
-paths the network backend uses.
+All three backends — `sync-local.js`, `sync-relay.js`, `sync-firebase.js` —
+implement the same five methods (`create`, `join`, `watch`, `update`, `close`), and
+`applyPaths` in `room.js` reproduces Firebase's merge semantics everywhere else,
+including on the relay server. Swapping transports changes no app code.
+
+That's also what makes the sync logic testable. `npm run test:e2e` runs two pages
+through a shared room over a BroadcastChannel. `npm run test:relay` goes further:
+two *separate* browser contexts with nothing in common, talking over a real
+WebSocket relay it starts itself — so the only thing that can carry state between
+them is the network. It checks that a tap on one phone lands on the other, that
+the room outlives the host closing their phone, that a reload rejoins, and that
+killing and restarting the relay doesn't lose the game.
 
 ### Who can edit what
 

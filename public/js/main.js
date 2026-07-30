@@ -45,7 +45,7 @@ const scorer = new Scorer(store);
 
 const view = {
   screen: 'home',
-  onlineAvailable: false,
+  onlineKind: null, // 'relay' | 'firebase' | null
   shownRound: null, // last round summary displayed
   shownWinner: null,
 };
@@ -68,7 +68,7 @@ async function boot() {
 
   window.__flip7 = { store, scorer, view };
 
-  view.onlineAvailable = await Store.onlineAvailable();
+  view.onlineKind = await Store.onlineKind();
   paintHostSetup();
 
   document.addEventListener(
@@ -241,8 +241,10 @@ function buildHostSetup() {
 }
 
 function paintHostSetup() {
-  // Without a Firebase config there is nothing to sync to, so don't offer it.
-  if (!view.onlineAvailable && setup.mode === 'firebase') saveSetup({ mode: 'local' });
+  // 'online' means whichever transport is configured; older saves stored the
+  // transport name directly.
+  if (setup.mode === 'firebase' || setup.mode === 'relay') saveSetup({ mode: 'online' });
+  if (!view.onlineKind && setup.mode === 'online') saveSetup({ mode: 'local' });
 
   segment(
     $('host-target'),
@@ -257,7 +259,7 @@ function paintHostSetup() {
   segment(
     $('host-mode'),
     [
-      { value: 'firebase', label: 'Their own phones', disabled: !view.onlineAvailable },
+      { value: 'online', label: 'Their own phones', disabled: !view.onlineKind },
       { value: 'local', label: 'Just this one' },
     ],
     setup.mode,
@@ -267,11 +269,11 @@ function paintHostSetup() {
     },
   );
 
-  $('host-mode-hint').textContent = view.onlineAvailable
-    ? setup.mode === 'firebase'
+  $('host-mode-hint').textContent = view.onlineKind
+    ? setup.mode === 'online'
       ? 'Everyone joins with the room code and taps their own cards.'
       : 'One phone for the table — you tap for everybody.'
-    : 'Online rooms need a Firebase config in firebase-config.js. Until then, one phone keeps score for the table.';
+    : 'Online rooms need a relay address in relay-config.js, or a Firebase config. Until then, one phone keeps score for the table.';
 }
 
 function buildSettings() {
@@ -365,7 +367,8 @@ async function hostGame() {
   saveSetup({ name });
   busy(btn, true, 'Creating…');
   try {
-    const code = await store.host({ name, target: setup.target, mode: setup.mode });
+    const mode = setup.mode === 'online' ? view.onlineKind : 'local';
+    const code = await store.host({ name, target: setup.target, mode });
     view.shownRound = null;
     view.shownWinner = null;
     scorer.selectedId = null;
@@ -400,7 +403,7 @@ async function joinGame() {
   busy(btn, true, 'Joining…');
   try {
     // A code that isn't online may still be a game on this device.
-    const modes = view.onlineAvailable ? ['firebase', 'local'] : ['local'];
+    const modes = view.onlineKind ? [view.onlineKind, 'local'] : ['local'];
     let joined = false;
     let last = null;
     for (const mode of modes) {
@@ -608,7 +611,7 @@ let editRows = [];
 function paintMenu() {
   $('menu-code').textContent = store.code ?? '····';
   $('menu-status').textContent = store.isOnline
-    ? `${playerList(store.state).length} at the table · everyone on their own phone`
+    ? `${playerList(store.state).length} at the table · synced via ${store.transport}`
     : 'Keeping score on this device only';
   $('btn-manage').hidden = !store.isHost;
   $('btn-share').hidden = !store.code;

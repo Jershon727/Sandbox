@@ -5,3 +5,5 @@ node_modules/
 scripts/.debug.mjs
 dist/
 # .firebaserc is committed: it names the project to deploy to, not a secret.
+.rooms.json
+.rooms.json.tmp

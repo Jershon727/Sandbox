@@ -59,7 +59,7 @@ export function speedFactor() {
 const DEFAULT_SETUP = {
   name: '',
   target: 200,
-  mode: 'local', // local | firebase
+  mode: 'local', // local | online (whichever transport is configured)
 };
 
 export const setup = { ...DEFAULT_SETUP, ...read('setup', {}) };

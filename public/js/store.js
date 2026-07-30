@@ -86,7 +86,12 @@ export class Store {
   }
 
   get isOnline() {
-    return this.mode === 'firebase';
+    return this.mode === 'relay' || this.mode === 'firebase';
+  }
+
+  /** How this room is being kept in step, for the menu to name. */
+  get transport() {
+    return this.sync?.label ?? this.mode ?? 'this device';
   }
 
   /** You may always fix your own hand; the host may fix anybody's. */
@@ -109,28 +114,55 @@ export class Store {
   }
 
   async _backend(mode) {
-    if (mode === 'firebase' && !Store.singleFile) {
+    if (Store.singleFile || mode === 'local') return createLocalSync();
+
+    if (mode === 'relay') {
+      const [{ createRelaySync }, config] = await Promise.all([
+        import('./sync-relay.js'),
+        import('../relay-config.js'),
+      ]);
+      return createRelaySync(config);
+    }
+
+    if (mode === 'firebase') {
       const [{ createFirebaseSync }, { firebaseConfig }] = await Promise.all([
         import('./sync-firebase.js'),
         import('../firebase-config.js'),
       ]);
       return createFirebaseSync(firebaseConfig);
     }
+
     return createLocalSync();
   }
 
-  /** Is an online game even possible in this build? */
-  static async onlineAvailable() {
-    if (Store.singleFile) return false;
+  /**
+   * Which online transport this build can use, if any.
+   * A relay wins when both are configured: it's the one you host yourself.
+   */
+  static async onlineKind() {
+    if (Store.singleFile) return null;
+
+    try {
+      const [{ hasRelayConfig }, config] = await Promise.all([
+        import('./sync-relay.js'),
+        import('../relay-config.js'),
+      ]);
+      if (hasRelayConfig(config)) return 'relay';
+    } catch {
+      /* no relay module or config — try Firebase */
+    }
+
     try {
       const [{ hasFirebaseConfig }, { firebaseConfig }] = await Promise.all([
         import('./sync-firebase.js'),
         import('../firebase-config.js'),
       ]);
-      return hasFirebaseConfig(firebaseConfig);
+      if (hasFirebaseConfig(firebaseConfig)) return 'firebase';
     } catch {
-      return false;
+      /* nothing configured */
     }
+
+    return null;
   }
 
   async host({ name, target = 200, mode = 'local' }) {

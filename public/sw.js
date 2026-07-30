@@ -6,7 +6,7 @@
  * quietly refresh it in the background.
  */
 
-const CACHE = 'flip7-v3';
+const CACHE = 'flip7-v4';
 
 const SHELL = [
   '.',
@@ -20,6 +20,8 @@ const SHELL = [
   'js/odds.js',
   'js/store.js',
   'js/sync-local.js',
+  'js/sync-relay.js',
+  'relay-config.js',
   'js/scorer.js',
   'js/cards.js',
   'js/scoring.js',
