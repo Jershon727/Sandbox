@@ -178,6 +178,18 @@ function wireChrome() {
   $('btn-join').addEventListener('click', joinGame);
   $('btn-resume').addEventListener('click', resumeGame);
   $('btn-end-round').addEventListener('click', endRound);
+  $('btn-dhit').addEventListener('click', () => store.intent({ do: 'hit' }));
+  $('btn-dstay').addEventListener('click', () => {
+    sfx.stay();
+    store.intent({ do: 'stay' });
+  });
+  $('btn-deal-next').addEventListener('click', () => store.intent({ do: 'next-round' }));
+
+  // In a dealt game, dismissing the summary is also the host asking for the next
+  // deal. In scorekeeping mode the round has already turned over, so it just closes.
+  $('btn-next-round').addEventListener('click', () => {
+    if (store.isDealt && store.isHost) store.intent({ do: 'next-round' });
+  });
   $('btn-rematch').addEventListener('click', rematch);
   $('btn-share').addEventListener('click', shareRoom);
   $('room-chip').addEventListener('click', shareRoom);
@@ -240,6 +252,20 @@ function buildHostSetup() {
   name.addEventListener('input', () => saveSetup({ name: name.value }));
 }
 
+const BOT_STYLE_OPTIONS = [
+  { value: 'mixed', label: 'Mixed' },
+  { value: 'cautious', label: 'Careful' },
+  { value: 'balanced', label: 'Steady' },
+  { value: 'reckless', label: 'Wild' },
+];
+
+const BOT_STYLE_HINTS = {
+  mixed: 'A table of different nerves. Recommended.',
+  cautious: 'They bank early and hate a coin flip.',
+  balanced: 'They play the odds, mostly.',
+  reckless: 'They chase the 7 like it owes them money.',
+};
+
 function paintHostSetup() {
   // 'online' means whichever transport is configured; older saves stored the
   // transport name directly.
@@ -255,6 +281,53 @@ function paintHostSetup() {
       paintHostSetup();
     },
   );
+
+  // Real cards vs the app dealing. Dealing needs the relay, since the dealer
+  // lives there — nobody should be able to deal themselves a card.
+  const canDeal = view.onlineKind === 'relay';
+  if (!canDeal && setup.cards === 'dealt') saveSetup({ cards: 'real' });
+
+  segment(
+    $('host-cards'),
+    [
+      { value: 'real', label: 'Real cards' },
+      { value: 'dealt', label: 'Deal for us', disabled: !canDeal },
+    ],
+    setup.cards,
+    (v) => {
+      saveSetup({ cards: v });
+      paintHostSetup();
+    },
+  );
+
+  const dealing = setup.cards === 'dealt';
+  $('host-cards-hint').textContent = dealing
+    ? 'The app shuffles and deals. Everyone taps Hit or Stay on their own phone.'
+    : canDeal
+      ? "You're playing with a physical deck; the app keeps score."
+      : "You're playing with a physical deck; the app keeps score. Dealing needs the relay.";
+
+  $('field-bots').hidden = !dealing;
+  $('field-botstyle').hidden = !dealing;
+  $('field-mode').hidden = dealing;
+
+  if (dealing) {
+    segment(
+      $('host-bots'),
+      [0, 1, 2, 3, 4].map((n) => ({ value: n, label: String(n) })),
+      setup.bots,
+      (v) => {
+        saveSetup({ bots: v });
+        paintHostSetup();
+      },
+    );
+    segment($('host-botstyle'), BOT_STYLE_OPTIONS, setup.botStyle, (v) => {
+      saveSetup({ botStyle: v });
+      paintHostSetup();
+    });
+    $('host-botstyle-hint').textContent = BOT_STYLE_HINTS[setup.botStyle] ?? '';
+    return;
+  }
 
   segment(
     $('host-mode'),
@@ -367,8 +440,16 @@ async function hostGame() {
   saveSetup({ name });
   busy(btn, true, 'Creating…');
   try {
-    const mode = setup.mode === 'online' ? view.onlineKind : 'local';
-    const code = await store.host({ name, target: setup.target, mode });
+    const dealt = setup.cards === 'dealt';
+    const mode = dealt ? 'relay' : setup.mode === 'online' ? view.onlineKind : 'local';
+    const code = await store.host({
+      name,
+      target: setup.target,
+      mode,
+      dealt,
+      bots: setup.bots,
+      botStyle: setup.botStyle,
+    });
     view.shownRound = null;
     view.shownWinner = null;
     scorer.selectedId = null;
@@ -498,7 +579,11 @@ async function rematch() {
   if (!store.isHost) return toast('The host can start the next game');
   view.shownWinner = null;
   view.shownRound = null;
-  await store.update(rematchUpdates(store.state));
+  if (store.isDealt) {
+    await store.intent({ do: 'rematch' });
+  } else {
+    await store.update(rematchUpdates(store.state));
+  }
   toast('Scores cleared — good luck');
 }
 
@@ -510,6 +595,8 @@ function onState(state) {
   $('room-code').textContent = state.code ?? '····';
   $('room-meta').textContent = `round ${state.round} · to ${state.target}`;
   scorer.render();
+
+  renderDealt(state);
 
   // A table of one needs telling what to do next — inline, not as a toast that
   // covers the very code they're meant to read out.
@@ -534,6 +621,70 @@ function onState(state) {
     view.shownRound = state.lastRound?.round ?? view.shownRound;
     showWinner(state);
   }
+}
+
+/**
+ * The dealt-game controls. The keypad is for tapping cards you were physically
+ * dealt; when the app is dealing, the only decisions are hit and stay.
+ */
+function renderDealt(state) {
+  const dealt = state.kind === 'dealt';
+  $('pad').hidden = dealt;
+  $('dealt').hidden = !dealt;
+  for (const id of ['btn-undo', 'btn-clear']) $(id).hidden = dealt;
+  if (dealt) $('btn-end-round').hidden = true;
+  $('waiting').hidden = dealt || store.isHost;
+  if (!dealt) return;
+
+  const me = state.players?.[store.myId];
+  const myTurn = state.turnId === store.myId;
+  const pending = state.pending;
+  const mineToTarget = pending?.byId === store.myId;
+  const over = state.status === 'finished' || state.roundOver;
+
+  $('dealt-actions').hidden = !myTurn || !!pending;
+  $('btn-deal-next').hidden = !(state.roundOver && store.isHost && state.status !== 'finished');
+
+  if (myTurn && !pending) {
+    const hand = me?.hand ?? { numbers: [] };
+    const banked = hand.numbers.reduce((a, b) => a + b, 0);
+    $('dstay-sub').textContent = `bank ${roundScoreOf(me)}`;
+    $('dhit-sub').textContent = hand.chance ? 'shielded' : 'one more card';
+    void banked;
+  }
+
+  $('dealt-status').textContent = dealtStatus(state, { myTurn, pending, mineToTarget, over });
+}
+
+function roundScoreOf(player) {
+  if (!player) return 0;
+  const hand = player.hand ?? {};
+  const base = (hand.numbers ?? []).reduce((a, b) => a + b, 0);
+  const doubled = (hand.mods ?? []).some((m) => m.op === 'mul');
+  const bonus = (hand.mods ?? []).filter((m) => m.op === 'add').reduce((a, m) => a + m.value, 0);
+  if (hand.busted) return 0;
+  return base * (doubled ? 2 : 1) + bonus + ((hand.numbers ?? []).length >= 7 ? 15 : 0);
+}
+
+function dealtStatus(state, { myTurn, pending, mineToTarget, over }) {
+  const name = (id) => state.players?.[id]?.name ?? 'someone';
+
+  if (state.status === 'finished') return 'Game over.';
+  if (state.roundOver) {
+    return store.isHost ? 'Round over.' : `Round over — waiting for ${name(state.hostId)}.`;
+  }
+  if (pending) {
+    const label = { freeze: 'Freeze', flip3: 'Flip Three', gift: 'a spare Second Chance' }[
+      pending.action
+    ];
+    return mineToTarget
+      ? `You drew ${label} — tap a player to use it on.`
+      : `${name(pending.byId)} drew ${label}…`;
+  }
+  if (myTurn) return 'Your turn.';
+  if (state.turnId) return `${name(state.turnId)} is playing…`;
+  void over;
+  return 'Dealing…';
 }
 
 function onSyncError(error) {

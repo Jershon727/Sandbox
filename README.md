@@ -8,7 +8,14 @@ It does the arithmetic nobody wants to do at the end of a round — `×2` before
 bonuses, the +15 for a Flip 7, a bust that wipes the round — and it keeps the
 running totals.
 
-## Two ways to run it
+## Three ways to play
+
+**The app deals.** A full virtual game: it shuffles, deals, and plays bot
+opponents. Play solo against bots, or share the code and have friends join the
+same dealt table on their own phones. Needs the relay, because the dealer lives
+there — see [Playing a dealt game](#playing-a-dealt-game).
+
+## Two ways to score a real deck
 
 **Everyone on their own phone** (needs Firebase, see below). The host creates a
 room, shares the code or the link, and each player taps their own cards. Scores
@@ -17,6 +24,35 @@ sync live.
 **Just one phone.** No setup at all. One device keeps score for the whole table:
 add everyone from the menu and tap for each player in turn. This is also the
 fallback whenever Firebase isn't configured.
+
+## Playing a dealt game
+
+Start a game, set **Cards → Deal for us**, pick how many bots and how they play,
+and the app runs the whole thing: it deals an opening card to everyone, you tap
+**Hit** or **Stay** on your turn, action cards ask you to pick a target, and the
+round closes itself when everyone is out.
+
+Share the code and other people join the same table. Someone arriving mid-round
+sits out that hand and is dealt in on the next one, rather than being handed cards
+nobody dealt them.
+
+**The dealer is the relay, not your phone.** That matters for more than
+tidiness:
+
+- The deck's *order* never leaves the server. Its *composition* does, because
+  every card in Flip 7 is dealt face up and anyone can count them — which is why
+  the Bust-O-meter is exact in a dealt game rather than an estimate.
+- Players send intents ("hit", "stay", "target them"), not state. The dealer
+  refuses anything that isn't yours to do, so playing out of turn or dealing
+  yourself a card isn't possible from the client.
+- Bots are played by the dealer, on the same odds the Bust-O-meter shows you.
+  They pause before acting, because a round that resolves in one frame is
+  unreadable.
+- A game in progress is saved, RNG state included, so a relay restart doesn't end
+  the evening.
+
+Bots come in three temperaments — careful, steady and wild — or mixed, which is
+the better table.
 
 ## Turning on live sync
 
@@ -181,6 +217,8 @@ npm start          # → http://localhost:5173
 npm test           # scoring, room logic and the Bust-O-meter
 npm run test:e2e   # two phones in one room, in a real browser
 npm run test:relay # two separate devices over a real relay, production shape
+npm run test:dealt # a dealt game: dealer, bots, turn order, hidden deck
+npm run test:all   # everything
 npm run relay      # the relay on its own → ws://localhost:8787
 ```
 
@@ -199,6 +237,9 @@ public/
   firebase-config.js    paste your project config here
   css/styles.css        tokens, themes, components, motion
   js/
+    engine.js           the rules, as a deterministic state machine
+    dealer.js           a dealt game: projection, intents, snapshot
+    ai.js               bot opponents
     room.js             room shape + the pure functions over it
     store.js            the live room: identity, presence, permissions
     sync-local.js       same-device backend (localStorage + BroadcastChannel)
@@ -223,6 +264,7 @@ scripts/
   serve.mjs             dependency-free dev server
   e2e.mjs               drives two pages through a shared room
   e2e-relay.mjs         two separate browser contexts over a real relay
+  e2e-dealt.mjs         a dealt game played through the relay
   set-config.mjs        turns a pasted Firebase config into firebase-config.js
   check-config.mjs      pre-deploy guard
   bundle.mjs            single-file build

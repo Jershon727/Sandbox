@@ -96,6 +96,19 @@ export class Scorer {
   }
 
   select(playerId) {
+    // In a dealt game, tapping a player is how you aim an action card.
+    const pending = this.store.state?.pending;
+    if (this.store.isDealt) {
+      if (pending?.byId === this.store.myId && pending.targets.includes(playerId)) {
+        sfx.tap();
+        this.store.intent({ do: 'target', targetId: playerId });
+      } else {
+        sfx.error();
+        toast('The dealer is running this one');
+      }
+      return;
+    }
+
     if (!this.store.canEdit(playerId)) {
       const name = this.store.state?.players?.[playerId]?.name ?? 'They';
       sfx.error();
@@ -113,6 +126,8 @@ export class Scorer {
   writeHand(hand) {
     const t = this.target;
     if (!t) return Promise.resolve();
+    // Only the dealer writes hands in a dealt game.
+    if (this.store.isDealt) return Promise.resolve();
     this.undoStack.push({ id: t.id, hand: structuredClone(this.hand) });
     if (this.undoStack.length > 40) this.undoStack.shift();
     return this.store.update({ [`players/${t.id}/hand`]: hand });
@@ -277,13 +292,21 @@ export class Scorer {
 
     this.renderStandings();
 
+    const dealt = this.store.isDealt;
+    // A dealt game always shows you your own hand; nobody edits anyone's.
+    if (dealt) this.selectedId = null;
+
     const t = this.target;
     const hand = this.hand;
     const shape = handShape(hand);
     const score = scoreHand(shape);
     const mine = t?.id === this.store.myId;
 
-    this.el.whose.textContent = mine ? 'Your hand' : `${t?.name ?? ''}'s hand`;
+    this.el.whose.textContent = dealt
+      ? 'Your hand'
+      : mine
+        ? 'Your hand'
+        : `${t?.name ?? ''}'s hand`;
     this.el.card.classList.toggle('is-proxy', !mine);
 
     const labels = { bust: 'Busted', flip7: 'Flip 7!', save: 'Saved' };
@@ -313,10 +336,13 @@ export class Scorer {
     this.renderAdvice(t);
 
     // Only the host ends the round, so the whole table banks on the same beat.
+    // In a dealt game the dealer decides, so neither control applies.
     const host = this.store.isHost;
-    this.el.end.hidden = !host;
-    this.el.waiting.hidden = host;
-    if (host) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
+    if (!dealt) {
+      this.el.end.hidden = !host;
+      this.el.waiting.hidden = host;
+      if (host) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
+    }
 
     this.announceFlip7();
   }
@@ -426,6 +452,11 @@ export class Scorer {
       row.classList.toggle('is-busted', shape.busted);
       row.classList.toggle('is-flip7', shape.flip7);
       row.classList.toggle('is-leading', leader > 0 && (p.total ?? 0) === leader);
+      row.classList.toggle('is-turn', state.turnId === p.id);
+      row.classList.toggle(
+        'is-target',
+        state.pending?.byId === this.store.myId && state.pending.targets.includes(p.id),
+      );
 
       const rank = document.createElement('span');
       rank.className = 'stand__rank';
@@ -439,6 +470,7 @@ export class Scorer {
       tags.className = 'stand__tags';
       if (p.id === this.store.myId) tags.append(chip('you', 'you'));
       if (p.id === state.hostId) tags.append(chip('host', 'host'));
+      if (p.isBot) tags.append(chip('bot', 'bot'));
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
@@ -490,7 +522,11 @@ export class Scorer {
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'hand__empty';
-      empty.textContent = shape.busted ? 'Busted with nothing' : 'Tap the cards below';
+      empty.textContent = shape.busted
+        ? 'Busted with nothing'
+        : this.store.isDealt
+          ? 'Waiting for a card'
+          : 'Tap the cards below';
       host.replaceChildren(empty);
       this.dealSource = null;
       return;
@@ -500,10 +536,15 @@ export class Scorer {
     host.replaceChildren();
     for (const item of items) {
       const el = createCard(item.card);
+      if (hand.busted) el.classList.add('is-spent');
+      if (this.store.isDealt) {
+        // Dealt cards aren't yours to take back.
+        host.append(el);
+        continue;
+      }
       el.setAttribute('role', 'button');
       el.tabIndex = 0;
       el.title = 'Tap to remove';
-      if (hand.busted) el.classList.add('is-spent');
       const remove = () => this.removeCard(item.kind, item.i);
       el.addEventListener('click', remove);
       el.addEventListener('keydown', (e) => {

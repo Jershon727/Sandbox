@@ -46,7 +46,11 @@ export function createLocalSync() {
     kind: 'local',
     label: 'this device',
 
-    async create(code, room) {
+    async create(code, room, options) {
+      if (options?.kind === 'dealt') {
+        // Dealing needs a dealer, and this backend is only a shared notebook.
+        throw Object.assign(new Error('Dealt games need the relay'), { code: 'not-supported' });
+      }
       if (readRoom(code)) {
         const err = new Error('That code is already in use');
         err.code = 'code-taken';
@@ -56,7 +60,7 @@ export function createLocalSync() {
       return room;
     },
 
-    async join(code) {
+    async join(code, _seat) {
       return readRoom(code);
     },
 

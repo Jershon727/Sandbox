@@ -15,7 +15,9 @@
     "deploy:offline": "node scripts/check-config.mjs --allow-offline && firebase deploy --only hosting",
     "set-config": "node scripts/set-config.mjs",
     "relay": "node server/relay.mjs",
-    "test:relay": "node scripts/e2e-relay.mjs"
+    "test:relay": "node scripts/e2e-relay.mjs",
+    "test:dealt": "node scripts/e2e-dealt.mjs",
+    "test:all": "npm test && npm run test:e2e && npm run test:relay && npm run test:dealt"
   },
   "devDependencies": {
     "firebase-tools": "^15.25.0",

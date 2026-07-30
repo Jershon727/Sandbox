@@ -40,7 +40,10 @@ export async function createFirebaseSync(config) {
     kind: 'firebase',
     label: 'online',
 
-    async create(code, room) {
+    async create(code, room, options) {
+      if (options?.kind === 'dealt') {
+        throw Object.assign(new Error('Dealt games need the relay'), { code: 'not-supported' });
+      }
       const snap = await db.get(roomRef(code));
       if (snap.exists()) {
         const err = new Error('That code is already in use');
@@ -51,7 +54,7 @@ export async function createFirebaseSync(config) {
       return room;
     },
 
-    async join(code) {
+    async join(code, _seat) {
       const snap = await db.get(roomRef(code));
       return snap.exists() ? snap.val() : null;
     },

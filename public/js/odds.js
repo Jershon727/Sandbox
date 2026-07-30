@@ -26,8 +26,92 @@ export function deckCopies(value) {
 export const MOD_ADDS = [2, 4, 6, 8, 10];
 export const ACTION_COUNT = 9; // 3 Freeze, 3 Flip Three, 3 Second Chance
 
-/** What's left in the deck, given everything face-up on the table. */
+/**
+ * The core maths, over a tally of what's left. Two callers build tallies
+ * differently — the room counts a full deck minus what's face-up, the dealt game
+ * knows its own remaining deck — but both then use these, so the Bust-O-meter and
+ * the bots can never disagree about the odds.
+ */
+export function emptyTally() {
+  const numbers = new Map();
+  for (let v = 0; v <= 12; v++) numbers.set(v, 0);
+  return { numbers, adds: [], mul: 0, actions: 0, total: 0 };
+}
+
+/** Build a tally straight from a list of card objects (a real remaining deck). */
+export function tallyOf(cards) {
+  const tally = emptyTally();
+  for (const card of cards) {
+    if (card.kind === 'number') tally.numbers.set(card.value, (tally.numbers.get(card.value) ?? 0) + 1);
+    else if (card.kind === 'modifier') {
+      if (card.op === 'mul') tally.mul += 1;
+      else tally.adds.push(card.value);
+    } else tally.actions += 1;
+    tally.total += 1;
+  }
+  return tally;
+}
+
+/** Chance the next card off this tally busts a hand holding `numbers`. */
+export function bustChanceOf(tally, { numbers = [], chance = false, busted = false } = {}) {
+  if (busted || chance || !tally.total) return 0;
+  let deadly = 0;
+  for (const v of new Set(numbers)) deadly += tally.numbers.get(v) ?? 0;
+  return deadly / tally.total;
+}
+
+/** How many cards on this tally would bust that hand, and out of how many. */
+export function bustCardsOf(tally, numbers = []) {
+  let deadly = 0;
+  for (const v of new Set(numbers)) deadly += tally.numbers.get(v) ?? 0;
+  return { deadly, total: tally.total };
+}
+
+/**
+ * Expected change in score from taking exactly one more card off this tally.
+ * Positive means the card is worth taking.
+ */
+export function expectedDeltaOf(tally, hand) {
+  const { numbers = [], doubled = false, chance = false, standing = 0 } = hand;
+  if (!tally.total) return 0;
+  const owned = new Set(numbers);
+  const numberSum = numbers.reduce((a, b) => a + b, 0);
+  let sum = 0;
+
+  for (const [value, count] of tally.numbers) {
+    if (!count) continue;
+    if (owned.has(value)) {
+      sum += count * (chance ? 0 : -standing);
+    } else {
+      const gained = doubled ? value * 2 : value;
+      sum += count * (gained + (owned.size + 1 >= FLIP7_TARGET ? FLIP7_BONUS : 0));
+    }
+  }
+  for (const add of tally.adds) sum += add;
+  sum += tally.mul * numberSum;
+  return sum / tally.total;
+}
+
+/**
+ * What's left in the deck.
+ *
+ * When the app is dealing, the dealer sends the exact remaining composition —
+ * public information, since every card is dealt face up — so the meter is exact.
+ * When scoring real cards we can only infer it from what the table has tapped.
+ */
 export function remaining(room) {
+  if (room?.deckTally) {
+    const t = room.deckTally;
+    return {
+      numbers: new Map(t.numbers),
+      adds: t.adds ?? [],
+      mul: t.mul ?? 0,
+      actions: t.actions ?? 0,
+      total: t.total ?? 0,
+      exact: true,
+    };
+  }
+
   const numbers = new Map();
   for (let v = 0; v <= 12; v++) numbers.set(v, deckCopies(v));
 
@@ -67,12 +151,7 @@ export function bustChance(room, playerId) {
   const hand = readHand(player.hand);
   if (hand.busted || hand.chance) return 0;
 
-  const left = remaining(room);
-  if (!left.total) return 0;
-
-  let deadly = 0;
-  for (const v of new Set(hand.numbers)) deadly += left.numbers.get(v) ?? 0;
-  return deadly / left.total;
+  return bustChanceOf(remaining(room), hand);
 }
 
 export function riskBand(p) {
@@ -84,12 +163,8 @@ export function riskBand(p) {
 
 /** How many unseen cards would bust you, and out of how many. */
 export function bustCards(room, playerId) {
-  const player = room?.players?.[playerId];
-  const hand = readHand(player?.hand);
-  const left = remaining(room);
-  let deadly = 0;
-  for (const v of new Set(hand.numbers)) deadly += left.numbers.get(v) ?? 0;
-  return { deadly, total: left.total };
+  const hand = readHand(room?.players?.[playerId]?.hand);
+  return bustCardsOf(remaining(room), hand.numbers);
 }
 
 /**
@@ -100,34 +175,12 @@ export function expectedDelta(room, playerId) {
   const player = room?.players?.[playerId];
   if (!player) return 0;
   const hand = readHand(player.hand);
-  const left = remaining(room);
-  if (!left.total) return 0;
-
-  const standing = roundScore(hand);
-  const owned = new Set(hand.numbers);
-  const doubled = hand.mods.some((m) => m.op === 'mul');
-  const numberSum = hand.numbers.reduce((a, b) => a + b, 0);
-  const uniques = owned.size;
-
-  let sum = 0;
-
-  for (const [value, count] of left.numbers) {
-    if (!count) continue;
-    if (owned.has(value)) {
-      // A duplicate: the shield eats it, otherwise the round is gone.
-      sum += count * (hand.chance ? 0 : -standing);
-    } else {
-      const gained = doubled ? value * 2 : value;
-      const completes = uniques + 1 >= FLIP7_TARGET ? FLIP7_BONUS : 0;
-      sum += count * (gained + completes);
-    }
-  }
-
-  for (const add of left.adds) sum += add;
-  if (left.mul) sum += numberSum; // doubling is worth what you already hold
-  // Freeze, Flip Three and Second Chance add no points on their own.
-
-  return sum / left.total;
+  return expectedDeltaOf(remaining(room), {
+    numbers: hand.numbers,
+    doubled: hand.mods.some((m) => m.op === 'mul'),
+    chance: hand.chance,
+    standing: roundScore(hand),
+  });
 }
 
 /**

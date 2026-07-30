@@ -16,6 +16,13 @@ export function makeRng(seed) {
 
   return {
     next,
+    /** Expose the state so a game in progress can be saved and resumed. */
+    get state() {
+      return s;
+    },
+    setState(value) {
+      s = value >>> 0;
+    },
     int: (n) => Math.floor(next() * n),
     range: (lo, hi) => lo + next() * (hi - lo),
     pick: (arr) => arr[Math.floor(next() * arr.length)],

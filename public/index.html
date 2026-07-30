@@ -162,6 +162,23 @@
           </div>
 
           <div class="field">
+            <span class="field__label">Cards</span>
+            <div class="seg" id="host-cards" role="radiogroup" aria-label="Where the cards are"></div>
+            <p class="field__hint" id="host-cards-hint"></p>
+          </div>
+
+          <div class="field" id="field-bots" hidden>
+            <span class="field__label">Bots at the table</span>
+            <div class="seg" id="host-bots" role="radiogroup" aria-label="Number of bots"></div>
+          </div>
+
+          <div class="field" id="field-botstyle" hidden>
+            <span class="field__label">How they play</span>
+            <div class="seg" id="host-botstyle" role="radiogroup" aria-label="Bot style"></div>
+            <p class="field__hint" id="host-botstyle-hint"></p>
+          </div>
+
+          <div class="field" id="field-mode">
             <span class="field__label">Everyone scores on</span>
             <div class="seg" id="host-mode" role="radiogroup" aria-label="How to keep score"></div>
             <p class="field__hint" id="host-mode-hint"></p>
@@ -279,6 +296,21 @@
         </div>
 
         <div class="pad" id="pad"></div>
+
+        <div class="dealt" id="dealt" hidden>
+          <p class="dealt__status" id="dealt-status">Dealing…</p>
+          <div class="dealt__actions" id="dealt-actions">
+            <button class="btn btn--stay" id="btn-dstay">
+              <span class="btn__label">Stay</span>
+              <span class="btn__sub" id="dstay-sub">bank 0</span>
+            </button>
+            <button class="btn btn--hit" id="btn-dhit">
+              <span class="btn__label">Hit</span>
+              <span class="btn__sub" id="dhit-sub">one more card</span>
+            </button>
+          </div>
+          <button class="btn btn--primary btn--xl" id="btn-deal-next" hidden>Deal the next round</button>
+        </div>
 
         <div class="tally__foot">
           <button class="btn btn--ghost btn--sm" id="btn-undo">

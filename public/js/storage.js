@@ -60,6 +60,9 @@ const DEFAULT_SETUP = {
   name: '',
   target: 200,
   mode: 'local', // local | online (whichever transport is configured)
+  cards: 'real', // real (physical deck, app scores) | dealt (app deals)
+  bots: 1,
+  botStyle: 'mixed',
 };
 
 export const setup = { ...DEFAULT_SETUP, ...read('setup', {}) };

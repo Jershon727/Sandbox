@@ -1546,6 +1546,65 @@ input {
   color: var(--ink-3);
 }
 
+/* ── the dealt game: hit, stay, and whose turn it is ─────────────────────── */
+
+.dealt {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.dealt__status {
+  text-align: center;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--ink-2);
+  min-height: 1.3em;
+}
+
+.dealt__actions {
+  display: grid;
+  grid-template-columns: 1fr 1.35fr;
+  gap: 9px;
+}
+
+.btn--stay {
+  background: var(--surface-2);
+  border: 1px solid var(--line-2);
+}
+
+.btn--hit {
+  background: linear-gradient(150deg, #7a5cff, #4a2fd6);
+  color: #fff;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.28) inset,
+    0 12px 24px -14px #6a4bff;
+}
+
+/* whose turn it is, on the scoreboard */
+.stand.is-turn {
+  border-color: color-mix(in oklab, var(--mint) 62%, transparent);
+  background: color-mix(in oklab, var(--mint) 12%, transparent);
+}
+
+.stand.is-turn .stand__rank::after {
+  content: '▸';
+  margin-left: 2px;
+  color: var(--mint);
+}
+
+.stand.is-target {
+  border-color: var(--gold);
+  background: color-mix(in oklab, var(--gold) 14%, transparent);
+  animation: pulse 1.15s ease-in-out infinite;
+}
+
+.chip[data-tone='bot'] {
+  background: color-mix(in oklab, var(--ice) 26%, transparent);
+  color: var(--ice);
+}
+
 /* ── code entry & join ─────────────────────────────────────────────────── */
 
 .input--code {

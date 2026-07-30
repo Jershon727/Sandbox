@@ -182,18 +182,24 @@ export async function createRelaySync(config) {
     kind: 'relay',
     label: 'relay',
 
-    async create(code, room) {
+    async create(code, room, options) {
       const link = connect(code);
-      const created = await ask(code, { t: 'create', room });
+      // A dealt game is created by the dealer, from a setup rather than a room:
+      // the server shuffles, so nobody can hand it a deck.
+      const message =
+        options?.kind === 'dealt'
+          ? { t: 'create', kind: 'dealt', setup: options.setup }
+          : { t: 'create', room };
+      const created = await ask(code, message);
       link.joined = true; // reconnects re-announce with join, not create
       link.room = created;
       return created;
     },
 
-    async join(code) {
+    async join(code, seatWanted) {
       const link = connect(code);
       try {
-        const room = await ask(code, { t: 'join' });
+        const room = await ask(code, { t: 'join', seat: seatWanted });
         link.joined = true;
         link.room = room;
         return room;
@@ -212,6 +218,18 @@ export async function createRelaySync(config) {
         link.onChange = null;
         link.onError = null;
       };
+    },
+
+    /** Ask the dealer for something. Unlike update(), this is a request. */
+    async intent(code, playerId, intent) {
+      const link = connect(code);
+      if (link.socket?.readyState !== WebSocket.OPEN) {
+        await link.ready?.catch(() => {});
+      }
+      if (link.socket?.readyState !== WebSocket.OPEN) {
+        throw Object.assign(new Error('Not connected to the dealer'), { code: 'offline' });
+      }
+      link.socket.send(JSON.stringify({ t: 'intent', playerId, intent }));
     },
 
     async update(code, paths) {

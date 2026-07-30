@@ -167,8 +167,25 @@ export class Store {
     return null;
   }
 
-  async host({ name, target = 200, mode = 'local' }) {
+  /** Is the app dealing the cards, or are we scoring real ones? */
+  get isDealt() {
+    return this.state?.kind === 'dealt';
+  }
+
+  /** Whose turn it is, in a dealt game. */
+  get turnId() {
+    return this.state?.turnId ?? null;
+  }
+
+  get myTurn() {
+    return !!this.myId && this.state?.turnId === this.myId;
+  }
+
+  async host({ name, target = 200, mode = 'local', dealt = false, bots = 1, botStyle = 'mixed' }) {
     const sync = await this._backend(mode);
+    if (dealt && !sync.intent) {
+      throw Object.assign(new Error('A dealt game needs the relay'), { code: 'needs-relay' });
+    }
     const hostId = makeId();
 
     // Codes are short, so a collision is possible; just try another.
@@ -176,9 +193,13 @@ export class Store {
     let code = null;
     for (let attempt = 0; attempt < 8 && !room; attempt++) {
       code = makeRoomCode();
-      const candidate = blankRoom({ code, target, hostId, hostName: name });
       try {
-        room = await sync.create(code, candidate);
+        room = dealt
+          ? await sync.create(code, null, {
+              kind: 'dealt',
+              setup: { hostId, hostName: name, target, bots, botStyle },
+            })
+          : await sync.create(code, blankRoom({ code, target, hostId, hostName: name }));
       } catch (err) {
         if (err.code !== 'code-taken') throw err;
       }
@@ -197,7 +218,8 @@ export class Store {
   async join({ code, name, mode = 'firebase' }) {
     const clean = normalizeCode(code);
     const sync = await this._backend(mode);
-    const room = await sync.join(clean);
+    const myId = makeId();
+    const room = await sync.join(clean, { id: myId, name });
     if (!room) {
       const err = new Error(`No game found with the code ${clean}`);
       err.code = 'room-missing';
@@ -209,12 +231,19 @@ export class Store {
     const existing = playerList(room).find(
       (p) => p.name.trim().toLowerCase() === name.trim().toLowerCase(),
     );
-    const playerId = existing?.id ?? makeId();
+    const playerId = existing?.id ?? myId;
 
     this.sync = sync;
     this.mode = mode;
     this.code = clean;
     this.myId = playerId;
+
+    // In a dealt game the dealer seats you; there is nothing for us to write.
+    if (room.kind === 'dealt') {
+      saveMembership({ code: clean, playerId, mode });
+      this._watch();
+      return clean;
+    }
 
     if (!existing) {
       await sync.update(clean, {
@@ -296,6 +325,16 @@ export class Store {
     } catch (err) {
       this._fail(err);
       throw err;
+    }
+  }
+
+  /** Ask the dealer to do something on our behalf. */
+  async intent(intent) {
+    if (!this.sync?.intent || !this.code || !this.myId) return;
+    try {
+      await this.sync.intent(this.code, this.myId, intent);
+    } catch (err) {
+      this._fail(err);
     }
   }
 
