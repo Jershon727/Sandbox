@@ -9,10 +9,13 @@
     "test:e2e": "node scripts/e2e.mjs",
     "shots": "node scripts/shots.mjs",
     "start": "node scripts/serve.mjs",
-    "deploy": "firebase deploy --only database,hosting",
-    "bundle": "node scripts/bundle.mjs"
+    "deploy": "node scripts/check-config.mjs && firebase deploy --only database,hosting",
+    "bundle": "node scripts/bundle.mjs",
+    "check-config": "node scripts/check-config.mjs",
+    "deploy:offline": "node scripts/check-config.mjs --allow-offline && firebase deploy --only hosting"
   },
   "devDependencies": {
+    "firebase-tools": "^15.25.0",
     "playwright": "^1.56.1"
   }
 }

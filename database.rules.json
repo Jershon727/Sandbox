@@ -5,8 +5,6 @@
 
     "rooms": {
       "$code": {
-        "//": "Knowing the four-character code is what gets you into a room. That is the same trust model as reading the code out at the table, and the reason rooms are disposable: start a new one and the old code stops mattering. The validation below is about keeping a stray client from writing junk, not about keeping players apart.",
-
         ".read": "$code.length === 4",
         ".write": "$code.length === 4",
         ".validate": "newData.hasChildren(['code', 'target', 'round', 'hostId'])",

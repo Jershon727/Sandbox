@@ -1,7 +1,7 @@
 node_modules/
 .firebase/
-.firebaserc
 *.log
 .DS_Store
 scripts/.debug.mjs
 dist/
+# .firebaserc is committed: it names the project to deploy to, not a secret.

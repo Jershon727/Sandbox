@@ -32,12 +32,22 @@ just stays in single-phone mode and tells you so.
 5. Deploy:
 
    ```bash
-   firebase deploy --only database,hosting
+   npm run deploy
    ```
 
-   The `database` part matters — it uploads `database.rules.json`. Without it the
-   database keeps whatever rules it was created with, which is either locked
-   (nothing works) or wide open (anything works).
+   That runs `firebase deploy --only database,hosting`. The `database` part
+   matters — it uploads `database.rules.json`. Without it the database keeps
+   whatever rules it was created with, which is either locked (nothing works) or
+   wide open (anything works).
+
+`npm run deploy` refuses to run while `firebase-config.js` still has placeholder
+values, because that deploy *succeeds* and serves an app with no database behind
+it — a failure you'd discover with friends already sitting around the table. To
+ship single-phone mode on purpose, use `npm run deploy:offline`.
+
+Deploying needs you to be logged in (`npx firebase login`) and the target
+project named in `.firebaserc`, which is set to `flip7-46611`. Change it if
+that's the wrong project.
 
 A web Firebase config is public by design; it isn't a secret. `database.rules.json`
 is what actually controls access. Those rules let anyone who knows a room's
