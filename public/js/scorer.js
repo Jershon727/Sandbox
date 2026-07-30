@@ -62,7 +62,7 @@ export class Scorer {
       waiting: id('waiting'),
       advice: id('advice'),
       adviceRow: id('advice-row'),
-      adviceDial: id('advice-dial'),
+      adviceNeedle: id('advice-needle'),
       advicePct: id('advice-pct'),
       adviceRec: id('advice-rec'),
       adviceWhy: id('advice-why'),
@@ -346,16 +346,41 @@ export class Scorer {
     el.advice.dataset.move = a.move;
 
     const pct = Math.round(a.risk * 100);
-    el.advicePct.textContent = `${pct}%`;
-    el.adviceDial.style.setProperty('--pct', String(Math.min(100, pct)));
+    // The needle slides via CSS; the number is tweened to match it.
+    el.adviceNeedle.style.setProperty('--pct', String(Math.min(100, pct)));
+    this.tweenPct(pct);
     el.adviceRec.textContent = a.headline;
     el.adviceReason.textContent = a.why;
 
     const whose = target.id === this.store.myId ? 'You' : target.name;
     el.adviceRow.setAttribute(
       'aria-label',
-      `${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
+      `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
     );
+  }
+
+  /** Count the percentage up or down so it travels with the needle. */
+  tweenPct(to) {
+    const el = this.el.advicePct;
+    cancelAnimationFrame(this.pctFrame);
+
+    const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const from = Number.parseInt(el.textContent, 10);
+    if (still || !Number.isFinite(from) || from === to) {
+      el.textContent = `${to}%`;
+      return;
+    }
+
+    const start = performance.now();
+    const span = 420;
+    const step = (now) => {
+      const t = Math.min(1, (now - start) / span);
+      // Ease out, so it settles rather than stopping dead.
+      const eased = 1 - (1 - t) ** 3;
+      el.textContent = `${Math.round(from + (to - from) * eased)}%`;
+      if (t < 1) this.pctFrame = requestAnimationFrame(step);
+    };
+    this.pctFrame = requestAnimationFrame(step);
   }
 
   /** A Flip 7 anywhere on the table ends the round, so everyone should know. */

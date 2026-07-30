@@ -251,16 +251,22 @@
 
           <div class="advice" id="advice" hidden>
             <button class="advice__row" id="advice-row" aria-expanded="false" aria-controls="advice-why">
-              <span class="advice__dial" id="advice-dial" aria-hidden="true"></span>
-              <span class="advice__risk">
-                <b id="advice-pct">0%</b>
-                <small>bust risk</small>
+              <span class="meter" aria-hidden="true">
+                <span class="meter__top">
+                  <span class="meter__label">Bust-O-meter</span>
+                  <span class="meter__pct" id="advice-pct">0%</span>
+                </span>
+                <span class="meter__track">
+                  <span class="meter__needle" id="advice-needle"></span>
+                </span>
               </span>
-              <span class="advice__says">
-                <small>Claude recommends</small>
-                <b class="advice__rec" id="advice-rec">Hit</b>
+              <span class="advice__foot">
+                <span class="advice__says">
+                  <small>Claude recommends</small>
+                  <b class="advice__rec" id="advice-rec">Hit</b>
+                </span>
+                <span class="advice__caret" aria-hidden="true">▾</span>
               </span>
-              <span class="advice__caret" aria-hidden="true">▾</span>
             </button>
             <div class="advice__why" id="advice-why" hidden>
               <p id="advice-reason"></p>

@@ -266,6 +266,19 @@ check(
 for (const n of [12, 11, 10, 9, 8, 7]) await tap(host, `Add a ${n}`);
 const bigRisk = Number((await host.textContent('#advice-pct')).replace('%', ''));
 check('a fat hand shows real risk', bigRisk > 30, `${bigRisk}%`);
+const needleAt = await host.evaluate(
+  () => Number(document.getElementById('advice-needle').style.getPropertyValue('--pct')),
+);
+check(
+  'the needle sits where the number says',
+  needleAt === bigRisk,
+  `needle ${needleAt}, number ${bigRisk}`,
+);
+check(
+  'and a high risk puts it in the red band',
+  (await host.getAttribute('#advice', 'data-band')) === 'hot',
+  await host.getAttribute('#advice', 'data-band'),
+);
 check(
   'and the recommendation is to stay',
   (await host.textContent('#advice-rec')).startsWith('Stay'),
@@ -310,7 +323,7 @@ await host.click('#modal-menu [data-open="settings"]');
 await host.waitForTimeout(150);
 await host.evaluate(() => {
   const rows = [...document.querySelectorAll('#settings-opts .opt')];
-  rows.find((r) => r.textContent.includes('Bust odds'))?.querySelector('.switch')?.click();
+  rows.find((r) => r.textContent.includes('Bust-O-meter'))?.querySelector('.switch')?.click();
 });
 await host.evaluate(() => document.querySelector('#modal-settings').setAttribute('hidden', ''));
 await host.waitForTimeout(150);

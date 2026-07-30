@@ -1351,16 +1351,19 @@ input {
 }
 
 
-/* ── the odds and the recommendation ──────────────────────────────────────
+/* ── the Bust-O-meter ─────────────────────────────────────────────────────
+   A fixed green-to-red scale with a needle that slides to your risk. The scale
+   staying put is the point: you learn where the danger starts, and you can see
+   the needle creeping toward it as the hand grows.
+
    Every card in Flip 7 is dealt face up, so this is arithmetic over public
-   information. It reads as a quiet instrument rather than a nag: colour carries
-   the risk, and the reasoning stays folded away until asked for. */
+   information — not a peek at the deck. */
 
 .advice {
   --risk-c: var(--ok);
   margin-top: 9px;
   border-top: 1px solid var(--line);
-  padding-top: 8px;
+  padding-top: 9px;
 }
 
 .advice[data-band='ok'] {
@@ -1376,9 +1379,9 @@ input {
 .advice__row {
   width: 100%;
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 2px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
   text-align: left;
   border-radius: 11px;
   transition: background 0.18s var(--ease);
@@ -1388,57 +1391,111 @@ input {
   background: var(--surface);
 }
 
-/* a dial that fills with the risk — quicker to read than the number */
-.advice__dial {
-  flex: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  position: relative;
-  background: conic-gradient(var(--risk-c) calc(var(--pct, 0) * 1%), var(--surface-2) 0);
-}
-
-.advice__dial::after {
-  content: '';
-  position: absolute;
-  inset: 4px;
-  border-radius: 50%;
-  background: var(--surface-solid);
-}
-
-.advice__risk {
-  flex: none;
+.meter {
   display: flex;
   flex-direction: column;
-  line-height: 1.05;
+  gap: 5px;
 }
 
-.advice__risk b {
-  font-size: 0.98rem;
+.meter__top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.meter__label {
+  font-size: 0.62rem;
   font-weight: 900;
-  font-variant-numeric: tabular-nums;
-  color: var(--risk-c);
-}
-
-.advice__risk small {
-  font-size: 0.58rem;
-  font-weight: 800;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-3);
+}
+
+.meter__pct {
+  font-size: 1.06rem;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  font-variant-numeric: tabular-nums;
+  color: var(--risk-c);
+  transition: color 0.4s var(--ease);
+}
+
+.meter__track {
+  position: relative;
+  height: 10px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    var(--ok) 0%,
+    #a3e635 26%,
+    var(--warm) 54%,
+    #ff8a3d 72%,
+    var(--hot) 92%
+  );
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* quarter ticks, so a glance tells you roughly where the needle sits */
+.meter__track::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: repeating-linear-gradient(
+    90deg,
+    transparent 0 calc(25% - 1px),
+    rgba(0, 0, 0, 0.3) calc(25% - 1px) 25%
+  );
+}
+
+.meter__needle {
+  position: absolute;
+  top: 50%;
+  left: calc(var(--pct, 0) * 1%);
+  z-index: 1;
+  width: 5px;
+  height: 18px;
+  margin-left: -2.5px;
+  border-radius: 3px;
+  background: var(--ink);
+  /* the dark ring keeps a light needle legible over any zone colour */
+  box-shadow:
+    0 0 0 2px var(--surface-solid),
+    0 0 10px var(--risk-c);
+  transform: translateY(-50%);
+  transition: left 0.55s var(--pop);
+}
+
+/* in the red zone it breathes, so you notice without looking for it */
+.advice[data-band='hot'] .meter__needle {
+  animation: needlePulse 1.15s ease-in-out infinite;
+}
+
+@keyframes needlePulse {
+  50% {
+    box-shadow:
+      0 0 0 2px var(--surface-solid),
+      0 0 20px var(--hot);
+  }
+}
+
+.advice__foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .advice__says {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  line-height: 1.05;
+  align-items: baseline;
+  gap: 7px;
 }
 
 .advice__says small {
-  font-size: 0.56rem;
+  font-size: 0.58rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1446,7 +1503,7 @@ input {
 }
 
 .advice__rec {
-  max-width: 100%;
+  min-width: 0;
   font-size: 1rem;
   font-weight: 900;
   letter-spacing: -0.02em;
@@ -1475,7 +1532,7 @@ input {
 }
 
 .advice__why {
-  padding: 4px 2px 2px;
+  padding: 2px 2px 0;
   font-size: 0.82rem;
   font-weight: 600;
   line-height: 1.45;

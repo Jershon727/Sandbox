@@ -314,7 +314,7 @@ function buildSettings() {
     }
   });
   toggle('Confetti', 'Celebrate a Flip 7 properly', 'effects', setFxEnabled);
-  toggle('Bust odds & advice', 'Show your risk and a hit-or-stay call', 'advice', () => {
+  toggle('Bust-O-meter', 'Your bust odds and a hit-or-stay call', 'advice', () => {
     if (store.state) scorer.render();
   });
 

@@ -135,7 +135,7 @@ public/
     sound.js            Web Audio effects — no audio files
     fx.js               canvas confetti
     storage.js          preferences
-    odds.js             bust odds and the hit-or-stay recommendation
+    odds.js             the Bust-O-meter's maths and the recommendation
   sw.js                 app-shell service worker, so it opens offline
 tests/                  node:test suites
 scripts/
@@ -169,10 +169,13 @@ ends a round, so the whole table banks on the same beat.
 Rejoining uses your name: come back after a crash with the same name and you get
 your seat and your score back rather than a duplicate row.
 
-## Bust odds and the recommendation
+## The Bust-O-meter
 
-Under your hand the app shows how likely the next card is to bust you, and
-whether it thinks you should hit or stay. Tap the row for the reasoning:
+Under your hand sits a meter: a fixed green-to-red scale with a needle that
+slides to your current chance of busting on the next card, and a hit-or-stay
+call beside it. The scale staying put is the point — you learn where the danger
+starts, and you watch the needle creep toward it as your hand grows. In the red
+zone it pulses. Tap the row for the reasoning:
 
 > 21 of the 78 unseen cards would bust you (27%). Risking 60 points is not worth
 > the average gain.
@@ -197,8 +200,8 @@ already wins the game and tells you to bank it.
   cards that may already be gone still count as available.
 
 Both errors point the same way — real risk is a little higher than shown — so
-treat it as a guide, not a guarantee. Turn it off in Settings if you'd rather
-play on instinct.
+treat it as a guide, not a guarantee. Turn the Bust-O-meter off in Settings if
+you'd rather play on instinct.
 
 ## The rules it implements
 
