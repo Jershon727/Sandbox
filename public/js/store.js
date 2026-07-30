@@ -231,7 +231,12 @@ export class Store {
     const existing = playerList(room).find(
       (p) => p.name.trim().toLowerCase() === name.trim().toLowerCase(),
     );
-    const playerId = existing?.id ?? myId;
+    // In a dealt game the dealer seats us and says which seat that was. Take its
+    // word over our own guess: matching by name picks the wrong seat when two
+    // people share one, and the seat the dealer is dealing to would then sit
+    // there never taking a turn.
+    const seated = room.kind === 'dealt' ? (sync.seatedAs?.(clean) ?? null) : null;
+    const playerId = seated ?? existing?.id ?? myId;
 
     this.sync = sync;
     this.mode = mode;

@@ -42,9 +42,17 @@ export function seatsFor({ hostId, hostName, bots = 1, botStyle = 'mixed' }) {
   return seats;
 }
 
-export function createDealtGame({ seats, target = 200, seed }) {
+/**
+ * A dealt game, optionally sitting in a lobby.
+ *
+ * `deal: false` leaves it idle so friends can take a seat before any cards move.
+ * Dealing at the moment the room is created would mean the host is the only
+ * person in it, and everyone who then joined would have to sit out round one —
+ * which looks precisely like the game refusing to deal them in.
+ */
+export function createDealtGame({ seats, target = 200, seed, deal = true }) {
   const game = new Flip7Game({ players: seats, targetScore: target, seed });
-  game.startRound();
+  if (deal) game.startRound();
   return game;
 }
 
@@ -71,6 +79,30 @@ export function addSeat(game, { id, name }) {
     joinedLate: game.phase === 'round',
   });
   return true;
+}
+
+/**
+ * Find or make this person's seat, and say which one it is.
+ *
+ * The dealer owns seating, not the phone. A client that decides its own seat id
+ * can end up driving a seat the dealer doesn't have, while the seat the dealer
+ * actually dealt to sits there and never takes a turn — which looks exactly like
+ * the game skipping a player. So the id this returns is the one to play as.
+ *
+ * Coming back under a name already at the table takes that seat over, which is
+ * what someone whose phone died actually wants.
+ */
+export function claimSeat(game, { id, name }) {
+  const clean = (String(name ?? '').trim() || 'Player').slice(0, 20);
+  if (id && game.byId(id)) return { playerId: id, added: false, late: false };
+
+  const key = clean.toLowerCase();
+  const held = game.players.find((p) => !p.isBot && p.name.trim().toLowerCase() === key);
+  if (held) return { playerId: held.id, added: false, late: !!held.joinedLate };
+
+  const seatId = id || makeId();
+  if (!addSeat(game, { id: seatId, name: clean })) return null;
+  return { playerId: seatId, added: true, late: !!game.byId(seatId).joinedLate };
 }
 
 export function removeSeat(game, playerId) {
@@ -136,6 +168,9 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       isBot: !!p.isBot,
       style: p.isBot ? p.style : undefined,
       state: p.status,
+      // Sitting out the round they walked in on. Without this the table shows
+      // them as having stayed, which reads as the dealer having skipped them.
+      waiting: !!p.joinedLate,
       lastSeen: p.lastSeen ?? Date.now(),
     };
   }
@@ -146,6 +181,8 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
     target: game.targetScore,
     round: game.round,
     hostId: game.players[0]?.id ?? null,
+    // No cards dealt yet: people are still taking seats.
+    lobby: game.phase === 'idle',
     status: game.phase === 'game-over' ? 'finished' : 'playing',
     winnerId: game.winner?.id ?? null,
     players,
@@ -188,9 +225,13 @@ export function applyIntent(game, playerId, intent) {
   }
 
   if (intent?.do === 'next-round') {
-    // Only between rounds, and only the host asks.
-    if (game.phase !== 'round-over') return { ok: false, why: 'not-now' };
+    // From the lobby or between rounds, and only the host asks.
+    if (game.phase !== 'round-over' && game.phase !== 'idle') return { ok: false, why: 'not-now' };
     if (game.players[0]?.id !== playerId) return { ok: false, why: 'host-only' };
+    // Opening a game against nobody would just deal the host a hand and end.
+    if (game.phase === 'idle' && game.players.length < MIN_SEATS) {
+      return { ok: false, why: 'need-players' };
+    }
     for (const p of game.players) delete p.joinedLate;
     game.startRound();
     return { ok: true, newRound: true };

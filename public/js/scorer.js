@@ -355,7 +355,8 @@ export class Scorer {
    */
   renderAdvice(target) {
     const el = this.el;
-    if (!settings.advice || !target) {
+    // Nothing to advise before the cards go out, or while you're sitting a round out.
+    if (!settings.advice || !target || this.store.state?.lobby || target.waiting) {
       el.advice.hidden = true;
       return;
     }
@@ -471,6 +472,9 @@ export class Scorer {
       if (p.id === this.store.myId) tags.append(chip('you', 'you'));
       if (p.id === state.hostId) tags.append(chip('host', 'host'));
       if (p.isBot) tags.append(chip('bot', 'bot'));
+      // Somebody who walked in mid-round isn't out, they're next. Saying so is
+      // the difference between "the app skipped them" and "they just missed one".
+      if (p.waiting) tags.append(chip('next round', 'waiting'));
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
@@ -524,9 +528,11 @@ export class Scorer {
       empty.className = 'hand__empty';
       empty.textContent = shape.busted
         ? 'Busted with nothing'
-        : this.store.isDealt
-          ? 'Waiting for a card'
-          : 'Tap the cards below';
+        : this.target?.waiting
+          ? 'Dealt in next round'
+          : this.store.isDealt
+            ? 'Waiting for a card'
+            : 'Tap the cards below';
       host.replaceChildren(empty);
       this.dealSource = null;
       return;

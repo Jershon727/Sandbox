@@ -597,7 +597,9 @@ function onState(state) {
   if (!state) return;
 
   $('room-code').textContent = state.code ?? '····';
-  $('room-meta').textContent = `round ${state.round} · to ${state.target}`;
+  $('room-meta').textContent = state.lobby
+    ? `taking seats · to ${state.target}`
+    : `round ${state.round} · to ${state.target}`;
   scorer.render();
 
   renderDealt(state);
@@ -605,9 +607,12 @@ function onState(state) {
   // A table of one needs telling what to do next — inline, not as a toast that
   // covers the very code they're meant to read out.
   const hint = $('room-hint');
-  const alone = playerList(state).length < 2;
-  hint.hidden = !alone;
-  if (alone) {
+  // A lobby is exactly the moment the host should be reading the code out, bots
+  // at the table or not — so show it there too, not only when the room is empty.
+  const gathering =
+    playerList(state).length < 2 || (state.lobby && store.isOnline && store.isHost);
+  hint.hidden = !gathering;
+  if (gathering) {
     hint.textContent = store.isOnline
       ? `Read out the code ${state.code} — players appear here as they join.`
       : 'Add everyone at the table from the menu, then tap their cards as they land.';
@@ -646,8 +651,19 @@ function renderDealt(state) {
   const mineToTarget = pending?.byId === store.myId;
   const over = state.status === 'finished' || state.roundOver;
 
+  // The same button opens the game from the lobby and turns each round over, so
+  // there's one place the host looks for "deal".
+  const seats = playerList(state).length;
+  const canDeal = (state.lobby || state.roundOver) && store.isHost && state.status !== 'finished';
   $('dealt-actions').hidden = !myTurn || !!pending;
-  $('btn-deal-next').hidden = !(state.roundOver && store.isHost && state.status !== 'finished');
+  $('btn-deal-next').hidden = !canDeal;
+  if (canDeal) {
+    // Dealing to a table of one would deal the host a hand and end the round.
+    $('btn-deal-next').disabled = state.lobby && seats < 2;
+    $('btn-deal-next').textContent = state.lobby
+      ? `Deal the first round (${seats} in)`
+      : 'Deal the next round';
+  }
 
   if (myTurn && !pending) {
     const hand = me?.hand ?? { numbers: [] };
@@ -657,9 +673,35 @@ function renderDealt(state) {
     void banked;
   }
 
-  $('dealt-status').textContent = dealtStatus(state, { myTurn, pending, mineToTarget, over });
+  $('dealt-status').textContent = dealtStatus(state, {
+    myTurn,
+    pending,
+    mineToTarget,
+    over,
+    waiting: !!me?.waiting,
+  });
   renderFeed(state.feed ?? []);
+  announceSittingOut(state, me);
   announceWhatHappenedToMe(state);
+}
+
+/**
+ * Walking in halfway through a round means sitting that one out — the cards were
+ * dealt before you got here. Told nothing, you watch a whole round go past
+ * without being dealt to and reasonably conclude the app forgot you.
+ *
+ * Read from the room rather than the feed, so it still fires for a phone that
+ * reconnects mid-round and for one that joined before it started watching.
+ */
+function announceSittingOut(state, me) {
+  const key = me?.waiting ? `${state.code}:${state.round}` : null;
+  if (!key || key === view.announcedWaiting) return;
+  view.announcedWaiting = key;
+  showBanner("You're in", {
+    tone: 'freeze',
+    sub: `round ${state.round} was already dealt — you play from the next one`,
+    ms: 1800,
+  });
 }
 
 /**
@@ -739,13 +781,22 @@ function roundScoreOf(player) {
   return base * (doubled ? 2 : 1) + bonus + ((hand.numbers ?? []).length >= 7 ? 15 : 0);
 }
 
-function dealtStatus(state, { myTurn, pending, mineToTarget, over }) {
+function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
   const name = (id) => state.players?.[id]?.name ?? 'someone';
 
   if (state.status === 'finished') return 'Game over.';
+  if (state.lobby) {
+    if (!store.isHost) return `Waiting for ${name(state.hostId)} to deal.`;
+    return playerList(state).length < 2
+      ? 'Waiting for someone to join — read out the code, or add a bot.'
+      : 'Everyone in? Tap deal and the cards go out.';
+  }
   if (state.roundOver) {
     return store.isHost ? 'Round over.' : `Round over — waiting for ${name(state.hostId)}.`;
   }
+  // Say it every render, not just once: this is the answer to "why am I not
+  // being dealt anything?" for as long as the round lasts.
+  if (waiting) return `You sit out round ${state.round} — you're dealt in next round.`;
   if (pending) {
     const label = { freeze: 'Freeze', flip3: 'Flip Three', gift: 'a spare Second Chance' }[
       pending.action

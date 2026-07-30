@@ -6,6 +6,7 @@ import {
   seatsFor,
   createDealtGame,
   addSeat,
+  claimSeat,
   removeSeat,
   project,
   applyIntent,
@@ -113,6 +114,97 @@ test('someone joining mid-round waits for the next deal', () => {
   settle(game);
   assert.equal(game.byId('late').status, Status.ACTIVE);
   assert.ok(game.byId('late').numbers.length >= 1, 'and gives them an opening card');
+});
+
+test('a game can wait in a lobby so nobody has to sit out round one', () => {
+  const game = createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 1 }),
+    seed: 7,
+    deal: false,
+  });
+
+  assert.equal(game.phase, 'idle');
+  assert.equal(game.round, 0);
+  assert.equal(game.deck.length, 0, 'no cards have moved');
+  assert.equal(project(game, { code: 'ABCD' }).lobby, true);
+
+  // Friends arriving now are playing from the very first round.
+  assert.ok(claimSeat(game, { id: 'sam', name: 'Sam' }));
+  assert.ok(claimSeat(game, { id: 'mo', name: 'Mo' }));
+  assert.equal(game.byId('sam').joinedLate, false);
+
+  // Nothing runs by itself until the host deals.
+  assert.equal(settle(game).waitingFor, 'me');
+  assert.equal(game.phase, 'idle');
+  assert.equal(applyIntent(game, 'me', { do: 'next-round' }).ok, true);
+
+  dealOut(game);
+  assert.equal(game.round, 1);
+  for (const id of ['me', 'sam', 'mo']) {
+    assert.equal(game.byId(id).status, Status.ACTIVE, `${id} is in round one`);
+    const p = game.byId(id);
+    assert.ok(
+      p.numbers.length + p.modifiers.length + (p.secondChance ? 1 : 0) >= 1,
+      `${id} was dealt a card`,
+    );
+  }
+  const view = project(game, { code: 'ABCD' });
+  assert.equal(view.lobby, false);
+  assert.ok(Object.values(view.players).every((p) => p.waiting === false));
+});
+
+test('only the host opens the game from the lobby', () => {
+  const game = createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 1 }),
+    seed: 3,
+    deal: false,
+  });
+  const bot = game.players.find((p) => p.isBot);
+  assert.deepEqual(applyIntent(game, bot.id, { do: 'next-round' }), { ok: false, why: 'host-only' });
+  assert.equal(game.phase, 'idle');
+});
+
+test('a table of one is not dealt to', () => {
+  const game = createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 0 }),
+    seed: 3,
+    deal: false,
+  });
+  assert.deepEqual(applyIntent(game, 'me', { do: 'next-round' }), { ok: false, why: 'need-players' });
+  assert.equal(game.phase, 'idle');
+
+  claimSeat(game, { id: 'sam', name: 'Sam' });
+  assert.equal(applyIntent(game, 'me', { do: 'next-round' }).ok, true);
+});
+
+test('the dealer says which seat is yours rather than letting a phone guess', () => {
+  const game = newGame();
+  settle(game);
+
+  const fresh = claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  assert.deepEqual(fresh, { playerId: 'sam-phone', added: true, late: true });
+
+  // Same phone again: the seat it already has, not a second one.
+  const again = claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  assert.deepEqual(again, { playerId: 'sam-phone', added: false, late: false });
+  assert.equal(game.players.filter((p) => p.name === 'Sam').length, 1);
+
+  // New phone, same name — a dead battery coming back. It takes the seat over,
+  // and crucially gets told that seat's id rather than the one it invented.
+  const replacement = claimSeat(game, { id: 'sam-new-phone', name: 'sam' });
+  assert.equal(replacement.playerId, 'sam-phone');
+  assert.equal(replacement.added, false);
+  assert.equal(game.players.length, 3);
+
+  // A different person with the same name does not silently drive Sam's seat
+  // under a new id — they get told the seat that exists.
+  assert.equal(game.byId('sam-new-phone'), undefined);
+});
+
+test('a full table refuses a seat instead of losing the request', () => {
+  const game = newGame({ seats: { bots: MAX_SEATS - 1 } });
+  assert.equal(game.players.length, MAX_SEATS);
+  assert.equal(claimSeat(game, { id: 'nope', name: 'Nope' }), null);
 });
 
 test('bots can be removed but people cannot', () => {
@@ -296,6 +388,86 @@ test('a whole dealt game plays itself out and produces a winner', () => {
     );
     assert.equal(game.deck.length + game.discard.length + inHands, 94, `seed ${seed} card count`);
   }
+});
+
+/**
+ * The invariant behind "my friends didn't get a turn": once a round is dealt,
+ * every player it was dealt to must either be asked to move or be taken out of
+ * the round by something the table can see happen. Silently skipping a seat is
+ * the bug; being frozen out of one is the game.
+ */
+test('every player dealt into a round either gets a turn or is visibly removed', () => {
+  const everPrompted = new Set();
+
+  for (const seed of [1, 5, 11, 19, 23]) {
+    const game = createDealtGame({
+      seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 1 }),
+      seed,
+      deal: false,
+    });
+    // Two friends take seats in the lobby, so three people need turns.
+    claimSeat(game, { id: 'sam', name: 'Sam' });
+    claimSeat(game, { id: 'mo', name: 'Mo' });
+    const humans = ['me', 'sam', 'mo'];
+
+    for (let round = 1; round <= 4 && game.phase !== 'game-over'; round++) {
+      assert.equal(applyIntent(game, 'me', { do: 'next-round' }).ok, true, `seed ${seed} deal`);
+      const dealtIn = game.players
+        .filter((p) => p.status === Status.ACTIVE)
+        .map((p) => p.id);
+      assert.deepEqual(
+        dealtIn.filter((id) => humans.includes(id)).sort(),
+        [...humans].sort(),
+        `seed ${seed} round ${round}: everyone is dealt in`,
+      );
+
+      const moved = new Set();
+      const removed = new Set();
+
+      for (let guard = 0; guard < 800; guard++) {
+        const step = advance(game);
+        for (const event of step.events ?? []) {
+          // hit/stay are emitted for bots and people alike, so this catches the
+          // turns advance() takes on a bot's behalf as well as our own.
+          if (event.type === 'hit' || event.type === 'stay') moved.add(event.playerId);
+          if (event.type === 'bust') removed.add(event.playerId);
+          if (event.type === 'freeze') removed.add(event.targetId);
+          if (event.type === 'flip7') {
+            removed.add(event.playerId);
+            for (const id of event.alsoScoring ?? []) removed.add(id);
+          }
+        }
+        if (step.delay !== null) continue;
+
+        const request = game.request();
+        if (request.type === 'move') {
+          applyIntent(game, request.playerId, { do: 'stay' });
+        } else if (request.type === 'target') {
+          // Aim at yourself where the rules allow it, so the test can't remove
+          // another player and then blame the dealer for skipping them.
+          const self = request.targets.includes(request.playerId)
+            ? request.playerId
+            : request.targets[0];
+          applyIntent(game, request.playerId, { do: 'target', targetId: self });
+        } else {
+          break; // round-over or game-over
+        }
+        if (guard === 799) throw new Error(`seed ${seed} round ${round} never closed`);
+      }
+
+      for (const id of dealtIn) {
+        assert.ok(
+          moved.has(id) || removed.has(id),
+          `seed ${seed} round ${round}: ${id} was neither asked to move nor removed`,
+        );
+      }
+      for (const id of humans) if (moved.has(id)) everPrompted.add(id);
+    }
+  }
+
+  // And the invariant isn't holding vacuously: over twenty rounds each person
+  // really did get asked.
+  assert.deepEqual([...everPrompted].sort(), ['me', 'mo', 'sam']);
 });
 
 test('round results carry what the summary needs', () => {

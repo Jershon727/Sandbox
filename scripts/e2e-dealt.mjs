@@ -132,13 +132,15 @@ check(
   Object.values(view.players).filter((p) => p.isBot).length === 1,
 );
 
+// ── a new table waits in a lobby ──────────────────────────────────────────
+// Dealing the moment the room is made would mean the host is the only person in
+// it, and everyone who joined next would have to sit out round one.
+check('a new table waits for players rather than dealing', view.lobby === true && view.round === 0);
+check('no cards have moved yet', view.deckLeft === 0);
+check('the host is offered the deal', await jack.page.locator('#btn-deal-next').isVisible());
+
 // ── the deck stays with the dealer ────────────────────────────────────────
 check('the client is never sent the deck', !('deck' in view) && !('discard' in view));
-check('but is told how many cards are left', typeof view.deckLeft === 'number' && view.deckLeft < 94);
-check(
-  'and the remaining composition, which anyone could count',
-  !!view.deckTally && view.deckTally.total === view.deckLeft,
-);
 const raw = await jack.page.evaluate(async () => {
   // Whatever the socket delivered, in full — no card identities should appear.
   return JSON.stringify(window.__flip7.store.state);
@@ -165,10 +167,68 @@ const seated = await jack.page
   .then(() => true)
   .catch(() => false);
 check('a second person can join a dealt table', seated);
+
+const samId = await sam.page.evaluate(() => window.__flip7.store.myId);
 check(
-  'and sits out the hand already in progress rather than being dealt into it',
-  (await state(sam.page)).players[await sam.page.evaluate(() => window.__flip7.store.myId)].hand
-    .numbers.length === 0,
+  'the seat the guest plays is the seat the dealer dealt',
+  !!(await state(sam.page)).players[samId],
+  samId,
+);
+check('a guest waiting in the lobby is not marked as sitting out', (await state(sam.page)).players[samId].waiting === false);
+
+// A guest cannot open the game — the host waits until everyone is in.
+await sam.page.evaluate(() => window.__flip7.store.intent({ do: 'next-round' }));
+await sam.page.waitForTimeout(600);
+check('a guest cannot deal the first round', (await state(sam.page)).lobby === true);
+
+// ── the host deals, and everybody is in round one ─────────────────────────
+// This is the check behind "my friends didn't get a turn": whoever is in the room
+// when the host deals must be holding cards in round one.
+await jack.page.click('#btn-deal-next');
+const opened = await jack.page
+  .waitForFunction(() => window.__flip7.store.state?.round === 1, null, { timeout: 12000 })
+  .then(() => true)
+  .catch(() => false);
+check('the host deals the first round', opened);
+
+// The opening deal can pause on somebody's action card; answer whoever it waits on.
+for (let i = 0; i < 40; i++) {
+  const st = await state(jack.page);
+  if (!st) break;
+  const dealtAll = Object.values(st.players).every(
+    (p) => p.hand.numbers.length + p.hand.mods.length > 0 || p.hand.chance,
+  );
+  if (dealtAll || st.turnId || st.roundOver) break;
+  for (const p of [jack, sam]) {
+    const s = await state(p.page);
+    const who = await p.page.evaluate(() => window.__flip7.store.myId);
+    if (s?.pending?.byId === who) {
+      await p.page.evaluate(
+        (t) => window.__flip7.store.intent({ do: 'target', targetId: t }),
+        s.pending.targets[0],
+      );
+    }
+  }
+  await jack.page.waitForTimeout(300);
+}
+
+const roundOne = await state(jack.page);
+check(
+  'everyone in the room is dealt into round one, nobody sitting it out',
+  Object.values(roundOne.players).every((p) => p.waiting === false),
+  JSON.stringify(Object.values(roundOne.players).map((p) => [p.name, p.waiting])),
+);
+check(
+  'and both people were dealt a hand, not just the host',
+  [await jack.page.evaluate(() => window.__flip7.store.myId), samId].every((id) => {
+    const h = roundOne.players[id].hand;
+    return h.numbers.length + h.mods.length > 0 || h.chance || roundOne.players[id].state !== 'active';
+  }),
+);
+check('now the deck has been dealt from', roundOne.deckLeft > 0 && roundOne.deckLeft < 94);
+check(
+  'and the client is told the remaining composition, which anyone could count',
+  !!roundOne.deckTally && roundOne.deckTally.total === roundOne.deckLeft,
 );
 
 // ── you cannot play out of turn ───────────────────────────────────────────
@@ -180,13 +240,38 @@ const upNow = await jack.page
   .catch(() => null);
 
 if (upNow) {
-  const notUp = (await jack.page.evaluate(() => window.__flip7.store.myId)) === upNow ? sam : jack;
-  const before = JSON.stringify((await state(notUp.page)).players);
-  await notUp.page.evaluate(() => window.__flip7.store.intent({ do: 'hit' }));
-  await notUp.page.waitForTimeout(800);
+  // Watch for the dealer's refusal rather than comparing room snapshots: the
+  // game is running, so the room changes for legitimate reasons while we look.
+  const askOutOfTurn = (p) =>
+    p.page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const store = window.__flip7.store;
+          const off = store.onError((err) => {
+            off();
+            resolve(err.code ?? 'error');
+          });
+          store.intent({ do: 'hit' });
+          setTimeout(() => {
+            off();
+            resolve(null);
+          }, 1200);
+        }),
+    );
+
+  // Whose turn it is can turn over between reading it and asking, so retry: a
+  // hit that lands means we caught them on turn, not that the dealer allowed it.
+  let refusal = null;
+  for (let attempt = 0; attempt < 6 && !refusal; attempt++) {
+    const st = await state(jack.page);
+    const jackId = await jack.page.evaluate(() => window.__flip7.store.myId);
+    if (!st?.turnId || st.roundOver) break;
+    refusal = await askOutOfTurn(st.turnId === jackId ? sam : jack);
+  }
   check(
-    'a hit from someone whose turn it is not changes nothing',
-    JSON.stringify((await state(notUp.page)).players) === before,
+    'the dealer refuses a hit from someone whose turn it is not',
+    refusal === 'not-your-turn' || refusal === 'not-now',
+    String(refusal),
   );
 } else {
   // A round can end before we catch anyone mid-turn — a Freeze on the opening
@@ -316,13 +401,18 @@ check('the host deals the next round', advanced);
 
 // The opening deal pauses if someone's first card is an action card, and if
 // that someone is us the dealer is waiting on our target — so answer it.
-let dealtAgain = false;
-for (let i = 0; i < 30; i++) {
+//
+// "Everyone is holding a card" is the wrong bar: a player dealt Freeze or Flip
+// Three plays it straight away and holds nothing, while still being very much in
+// the round. The bar that matters to a player is that the round's account names
+// everyone the cards went to — nobody silently absent from it.
+let dealtAgain = null;
+for (let i = 0; i < 40; i++) {
   const s = await state(jack.page);
-  const me = await jack.page.evaluate(() => window.__flip7.store.myId);
-  const hand = s?.players?.[me]?.hand;
-  if ((hand?.numbers?.length ?? 0) + (hand?.mods?.length ?? 0) > 0 || hand?.chance) {
-    dealtAgain = true;
+  if (!s) break;
+  // A turn being on offer means the whole opening deal got through.
+  if (s.turnId || s.roundOver) {
+    dealtAgain = s;
     break;
   }
   // The pause may be on either phone's target, so answer whichever it is.
@@ -336,9 +426,91 @@ for (let i = 0; i < 30; i++) {
       );
     }
   }
-  await jack.page.waitForTimeout(500);
+  await jack.page.waitForTimeout(400);
 }
-check('and everyone gets fresh cards', dealtAgain);
+check('and the fresh deal gets all the way round the table', !!dealtAgain);
+if (dealtAgain) {
+  const named = new Set(dealtAgain.feed.flatMap((l) => [l.who, l.to]).filter(Boolean));
+  const missing = Object.entries(dealtAgain.players)
+    .filter(([id]) => !named.has(id))
+    .map(([, p]) => p.name);
+  check(
+    'and the account of the new round names every player in it',
+    missing.length === 0,
+    missing.join(', '),
+  );
+}
+
+// ── someone arriving mid-round is told they're sitting it out ─────────────
+// They genuinely can't be dealt into a hand already on the table. What broke
+// before was saying nothing about it, which reads as the app skipping them.
+const mo = await phone('mo');
+await mo.page.click('[data-goto="join"]');
+await mo.page.fill('#join-code', code);
+await mo.page.fill('#join-name', 'Mo');
+await mo.page.click('#btn-join');
+const moSeated = await mo.page
+  .waitForFunction(() => window.__flip7.store.state?.kind === 'dealt', null, { timeout: 8000 })
+  .then(() => true)
+  .catch(() => false);
+check('a latecomer can still join', moSeated);
+
+if (moSeated) {
+  const moId = await mo.page.evaluate(() => window.__flip7.store.myId);
+  const moView = await state(mo.page);
+  check('and is marked as sitting this round out', moView.players[moId]?.waiting === true);
+  check(
+    'their own screen says why they are not being dealt to',
+    /sit out round|dealt in next round/i.test(await mo.page.textContent('#dealt-status')),
+    await mo.page.textContent('#dealt-status'),
+  );
+  check(
+    'the table shows them as next round, not as having stayed',
+    await mo.page.evaluate(
+      (id) =>
+        [...document.querySelectorAll(`.stand[data-player="${id}"] .chip`)].some(
+          (c) => c.textContent === 'next round',
+        ),
+      moId,
+    ),
+  );
+  check(
+    'and the account of the round says they arrived',
+    (await state(jack.page)).feed.some((l) => l.type === 'join' && /Mo joined/.test(l.text)),
+  );
+
+  // The next deal brings them in properly — but the round in progress has to
+  // finish first, so play it out.
+  for (let i = 0; i < 60; i++) {
+    const st = await state(jack.page);
+    if (!st || st.roundOver || st.status === 'finished') break;
+    for (const p of [jack, sam]) {
+      const s = await state(p.page);
+      const who = await p.page.evaluate(() => window.__flip7.store.myId);
+      if (s?.pending?.byId === who) {
+        await p.page.evaluate(
+          (t) => window.__flip7.store.intent({ do: 'target', targetId: t }),
+          s.pending.targets[0],
+        );
+      } else if (s?.turnId === who) {
+        await p.page.evaluate(() => window.__flip7.store.intent({ do: 'stay' }));
+      }
+    }
+    await jack.page.waitForTimeout(350);
+  }
+  check('the round in progress closes', (await state(jack.page)).roundOver === true);
+
+  await jack.page.evaluate(() => window.__flip7.store.intent({ do: 'next-round' }));
+  const moDealtIn = await mo.page
+    .waitForFunction(
+      () => window.__flip7.store.state.players[window.__flip7.store.myId]?.waiting === false,
+      null,
+      { timeout: 15000 },
+    )
+    .then(() => true)
+    .catch(() => false);
+  check('the next deal brings the latecomer in', moDealtIn);
+}
 
 // ── the Bust-O-meter is exact when the dealer knows the deck ──────────────
 check(

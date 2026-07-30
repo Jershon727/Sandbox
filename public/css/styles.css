@@ -1657,6 +1657,11 @@ input {
   color: var(--ice);
 }
 
+.chip[data-tone='waiting'] {
+  background: color-mix(in oklab, var(--ink-3) 22%, transparent);
+  color: var(--ink-2);
+}
+
 /* ── code entry & join ─────────────────────────────────────────────────── */
 
 .input--code {

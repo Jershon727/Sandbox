@@ -21,7 +21,7 @@ import {
   seatsFor,
   createDealtGame,
   describeEvent,
-  addSeat,
+  claimSeat,
   project,
   applyIntent,
   advance,
@@ -100,15 +100,28 @@ function touch(entry) {
 
 const FEED_LINES = 40;
 
-/** Re-project a dealt game and push it to everyone. */
-function publish(code, entry) {
+/** Rebuild the readable view of a dealt game, without sending it anywhere. */
+function reproject(code, entry) {
   entry.room = project(entry.game, {
     code,
     lastRound: entry.lastRound ?? null,
     feed: entry.feed ?? [],
   });
   touch(entry);
+}
+
+/** Re-project a dealt game and push it to everyone. */
+function publish(code, entry) {
+  reproject(code, entry);
   broadcast(entry);
+}
+
+/** Add one line to the running account of the round. */
+function noteFeed(entry, line) {
+  entry.feed ??= [];
+  entry.seq ??= 0;
+  entry.feed.push({ n: ++entry.seq, ...line });
+  if (entry.feed.length > FEED_LINES) entry.feed.splice(0, entry.feed.length - FEED_LINES);
 }
 
 /**
@@ -118,22 +131,18 @@ function publish(code, entry) {
  */
 function recordEvents(entry, events) {
   if (!events?.length) return;
-  entry.feed ??= [];
-  entry.seq ??= 0;
   for (const event of events) {
     const text = describeEvent(event, entry.game);
     if (!text) continue;
     // `to` lets a phone tell when something was done *to it* — being frozen out
     // of a round deserves more than a line in a list.
-    entry.feed.push({
-      n: ++entry.seq,
+    noteFeed(entry, {
       text,
       type: event.type,
       who: event.playerId ?? null,
       to: event.targetId ?? event.playerId ?? null,
     });
   }
-  if (entry.feed.length > FEED_LINES) entry.feed.splice(0, entry.feed.length - FEED_LINES);
 }
 
 /**
@@ -329,6 +338,9 @@ wss.on('connection', (socket, request) => {
             botStyle: setup.botStyle,
           }),
           target: Number(setup.target) || 200,
+          // Wait in a lobby: the host is alone in the room at this instant, and
+          // dealing now would make everyone who joins next sit out round one.
+          deal: false,
         });
         const created = {
           game,
@@ -364,13 +376,36 @@ wss.on('connection', (socket, request) => {
       entry.sockets.add(socket);
       touch(entry);
 
-      // In a dealt game the dealer owns the seating, so ask it for a seat.
-      if (entry.game && msg.seat?.id && !entry.game.byId(msg.seat.id)) {
-        if (addSeat(entry.game, { id: msg.seat.id, name: String(msg.seat.name ?? 'Player').slice(0, 20) })) {
-          publish(code, entry);
-          return;
+      // In a dealt game the dealer owns the seating, so ask it for a seat and
+      // tell the joiner which one it gave them. `you` is the important part: a
+      // phone that assumed a different id would drive a seat the dealer has
+      // never heard of, and its real seat would never take a turn.
+      if (entry.game) {
+        let seat = null;
+        if (msg.seat?.id || msg.seat?.name) {
+          seat = claimSeat(entry.game, { id: msg.seat.id, name: msg.seat.name });
+          if (!seat) return fail(socket, 'room-full', 'That table is full.');
         }
-        fail(socket, 'room-full', 'That table is full.');
+
+        if (seat?.added) {
+          const player = entry.game.byId(seat.playerId);
+          noteFeed(entry, {
+            text: seat.late
+              ? `${player.name} joined — dealt in next round.`
+              : `${player.name} joined.`,
+            type: 'join',
+            who: seat.playerId,
+            to: seat.playerId,
+            late: seat.late,
+          });
+          reproject(code, entry);
+          // Everyone else hears about the arrival; the arrival gets the version
+          // that also says which seat is theirs.
+          broadcast(entry, socket);
+        }
+
+        send(socket, { t: 'state', room: entry.room, you: seat?.playerId ?? null });
+        return;
       }
 
       send(socket, { t: 'state', room: entry.room });

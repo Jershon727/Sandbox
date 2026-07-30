@@ -140,7 +140,11 @@ export async function createRelaySync(config) {
     return link;
   }
 
-  /** Open a socket, send one message, and wait for the reply that answers it. */
+  /**
+   * Open a socket, send one message, and wait for the reply that answers it.
+   * Resolves with the whole reply, because a join reply carries which seat the
+   * dealer gave us alongside the room.
+   */
   function ask(code, message, { expect = 'state' } = {}) {
     const link = connect(code);
     return new Promise((resolve, reject) => {
@@ -156,7 +160,7 @@ export async function createRelaySync(config) {
         } catch {
           return;
         }
-        if (msg.t === expect) settle(resolve, msg.room ?? null);
+        if (msg.t === expect) settle(resolve, msg);
         else if (msg.t === 'error') {
           const err = new Error(msg.message);
           err.code = msg.code;
@@ -190,23 +194,31 @@ export async function createRelaySync(config) {
         options?.kind === 'dealt'
           ? { t: 'create', kind: 'dealt', setup: options.setup }
           : { t: 'create', room };
-      const created = await ask(code, message);
+      const reply = await ask(code, message);
       link.joined = true; // reconnects re-announce with join, not create
-      link.room = created;
-      return created;
+      link.room = reply.room ?? null;
+      link.you = options?.setup?.hostId ?? null;
+      return link.room;
     },
 
     async join(code, seatWanted) {
       const link = connect(code);
       try {
-        const room = await ask(code, { t: 'join', seat: seatWanted });
+        const reply = await ask(code, { t: 'join', seat: seatWanted });
         link.joined = true;
-        link.room = room;
-        return room;
+        link.room = reply.room ?? null;
+        // In a dealt game the dealer, not us, decides which seat we're in.
+        if (reply.you) link.you = reply.you;
+        return link.room;
       } catch (err) {
         if (err.code === 'room-missing') return null;
         throw err;
       }
+    },
+
+    /** Which seat this device was given, when the server was the one to decide. */
+    seatedAs(code) {
+      return links.get(code)?.you ?? null;
     },
 
     watch(code, onChange, onError) {

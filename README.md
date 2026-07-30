@@ -28,13 +28,21 @@ fallback whenever Firebase isn't configured.
 ## Playing a dealt game
 
 Start a game, set **Cards → Deal for us**, pick how many bots and how they play,
-and the app runs the whole thing: it deals an opening card to everyone, you tap
-**Hit** or **Stay** on your turn, action cards ask you to pick a target, and the
-round closes itself when everyone is out.
+and the table opens in a **lobby**: no cards move yet. Read the code out, watch
+your friends appear, then tap **Deal the first round**. From there the app runs
+the whole thing — an opening card to everyone, **Hit** or **Stay** on your turn,
+action cards asking you to pick a target, and the round closing itself when
+everyone is out.
 
-Share the code and other people join the same table. Someone arriving mid-round
-sits out that hand and is dealt in on the next one, rather than being handed cards
-nobody dealt them.
+The lobby exists because dealing the instant the room is made would mean the host
+was the only person in it, and everyone who joined next would have to sit out
+round one. Waiting for the host's tap means whoever is in the room plays from the
+first card.
+
+Someone who does arrive mid-round still sits that hand out — they can't be dealt
+into a hand already on the table — but the app says so: a **next round** tag next
+to their name, a line in the round's account, and a note on their own screen. The
+next deal brings them in.
 
 **The dealer is the relay, not your phone.** That matters for more than
 tidiness:
@@ -45,6 +53,10 @@ tidiness:
 - Players send intents ("hit", "stay", "target them"), not state. The dealer
   refuses anything that isn't yours to do, so playing out of turn or dealing
   yourself a card isn't possible from the client.
+- Seats belong to the dealer too. Joining gets you back the seat id the dealer
+  actually holds, rather than one your phone picked — otherwise a phone can spend
+  the evening driving a seat nobody is dealing to while its real seat sits there
+  never taking a turn.
 - Bots are played by the dealer, on the same odds the Bust-O-meter shows you.
   They pause before acting, because a round that resolves in one frame is
   unreadable.
