@@ -236,6 +236,13 @@ new copy of the room. Two people tapping at the same instant touch different
 paths, so neither can clobber the other. The host's "end round" is one atomic
 multi-path write, so nobody sees half a round banked.
 
+Writes are also applied locally before they're sent. Tapping a card rewrites the
+whole hand, so a tap that lands before the previous one's echo would otherwise be
+computed from a hand that no longer exists — and over a network that loses cards.
+Tapping six numbers quickly used to leave one. Since the server merges with the
+same `applyPaths`, the local copy and the server's converge, and taps register
+instantly however far away the relay is.
+
 All three backends — `sync-local.js`, `sync-relay.js`, `sync-firebase.js` —
 implement the same five methods (`create`, `join`, `watch`, `update`, `close`), and
 `applyPaths` in `room.js` reproduces Firebase's merge semantics everywhere else,

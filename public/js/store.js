@@ -11,6 +11,7 @@
  */
 
 import {
+  applyPaths,
   blankRoom,
   makeRoomCode,
   makeId,
@@ -271,8 +272,25 @@ export class Store {
 
   // ── writing ─────────────────────────────────────────────────────────────
 
+  /**
+   * Apply locally, then send.
+   *
+   * Tapping a card is a read-modify-write of the whole hand, so waiting for the
+   * server's echo before the next tap loses cards when someone taps quickly —
+   * the second write is computed from a hand that no longer exists. Applying the
+   * same paths locally keeps our copy ahead and the two converge, because the
+   * server merges with exactly this function.
+   *
+   * It also means taps register instantly regardless of how far away the relay is.
+   */
   async update(paths) {
     if (!this.sync || !this.code) return;
+
+    if (this.state) {
+      this.state = applyPaths(this.state, paths);
+      this._emit();
+    }
+
     try {
       await this.sync.update(this.code, paths);
     } catch (err) {

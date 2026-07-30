@@ -229,6 +229,14 @@ await sam.page.click('#modal-round [data-close]');
 check('totals banked across the wire', (await standing(sam.page, 'Sam'))?.total === '60');
 
 // ── the room outlives a phone: the thing peer-to-peer could not do ───────
+// A third phone stays connected so we can watch echoes arrive after the host
+// goes away.
+const jack2 = await phone('watcher');
+await jack2.page.click('[data-goto="join"]');
+await jack2.page.fill('#join-code', code);
+await jack2.page.fill('#join-name', 'Watcher');
+await jack2.page.click('#btn-join');
+await jack2.page.waitForFunction(() => window.__flip7.store.code, null, { timeout: 8000 });
 await jack.context.close();
 await new Promise((r) => setTimeout(r, 500));
 for (const n of [11, 3] ) await tap(sam.page, `Add a ${n}`);
@@ -257,6 +265,40 @@ await zoe.page.click('#btn-join');
 await zoe.page.waitForTimeout(1200);
 const joinError = await zoe.page.textContent('#join-error');
 check('an unknown code says so instead of hanging', /No game found/i.test(joinError), joinError);
+
+// ── tapping fast must not lose cards ─────────────────────────────────────
+// Each tap rewrites the whole hand, so a tap landing before the previous echo
+// would otherwise be computed from a hand that no longer exists.
+await sam.page.click('#btn-clear');
+await sam.page.waitForTimeout(400);
+// Fired synchronously in one go: six handlers back to back, which is the
+// harshest form of the race. Driving them through Playwright instead would fight
+// its element-stability checks, because a growing hand shifts the keypad.
+await sam.page.evaluate(() => {
+  for (const n of [1, 2, 3, 4, 5, 6]) {
+    document.querySelector(`#pad button[aria-label="Add a ${n}"]`).click();
+  }
+});
+await sam.page.waitForTimeout(1200);
+const fast = await sam.page.evaluate(() => {
+  const s = window.__flip7.store;
+  return s.state.players[s.myId].hand.numbers;
+});
+check(
+  'six quick taps all land',
+  fast.length === 6 && [1, 2, 3, 4, 5, 6].every((n) => fast.includes(n)),
+  `got [${fast}]`,
+);
+const echoed = await jack2.page.evaluate((id) => {
+  const s = window.__flip7.store;
+  return s.state.players[id].hand.numbers.length;
+}, await sam.page.evaluate(() => window.__flip7.store.myId));
+check('and all six reach the other phone', echoed === 6, `other phone saw ${echoed}`);
+
+await sam.page.click('#btn-clear');
+await sam.page.waitForTimeout(400);
+for (const n of [11, 3]) await tap(sam.page, `Add a ${n}`);
+await sam.page.waitForTimeout(600);
 
 // ── a relay restart must not lose the game ───────────────────────────────
 // Hosting platforms restart containers. If that ended everyone's evening, the
