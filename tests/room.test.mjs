@@ -104,9 +104,16 @@ test('missing arrays from the database read back as empty', () => {
     mods: [],
     chance: false,
     busted: false,
+    bustCard: null,
   });
   assert.deepEqual(readHand({ numbers: [4] }).mods, []);
   assert.equal(readHand({ busted: true }).busted, true);
+  // A dealt game says which card busted you; tapping your own cards does not.
+  assert.equal(readHand({ busted: true }).bustCard, null);
+  assert.deepEqual(readHand({ busted: true, bustCard: { kind: 'number', value: 9 } }).bustCard, {
+    kind: 'number',
+    value: 9,
+  });
 });
 
 test('a hand converts to the shape the shared scorer expects', () => {

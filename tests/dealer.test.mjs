@@ -7,6 +7,7 @@ import {
   createDealtGame,
   addSeat,
   claimSeat,
+  publicCard,
   removeSeat,
   project,
   applyIntent,
@@ -258,6 +259,59 @@ test('everyone is dealt an opening card', () => {
     const held = p.hand.numbers.length + p.hand.mods.length + (p.hand.chance ? 1 : 0);
     assert.ok(held >= 1, `${p.name} has a card`);
   }
+});
+
+test('a busted hand carries the card that busted it, with no card identity', () => {
+  // Drive a hand into a bust by hand, so the assertion doesn't depend on a seed.
+  const game = newGame();
+  settle(game);
+  const me = game.byId('me');
+  me.numbers = [{ id: 'c1', kind: 'number', value: 9 }];
+  game._bust(me, { id: 'c2', kind: 'number', value: 9 });
+
+  const hand = project(game, { code: 'ABCD' }).players.me.hand;
+  assert.equal(hand.busted, true);
+  assert.deepEqual(hand.bustCard, { kind: 'number', value: 9 }, 'the card, not just "busted"');
+  assert.ok(!('id' in hand.bustCard), 'and not which card in the deck it was');
+  assert.ok(!/"id":"c\d+"/.test(JSON.stringify(project(game, { code: 'ABCD' }))));
+});
+
+test('a hand nobody busted has no bust card', () => {
+  const game = newGame();
+  settle(game);
+  assert.equal(project(game, { code: 'ABCD' }).players.me.hand.bustCard, null);
+});
+
+test('an action card awaiting a target is sent with the projection', () => {
+  // The player aiming it should see the card, not just be told its name.
+  const game = newGame();
+  settle(game);
+  const me = game.byId('me');
+  game._openAction(me, { id: 'c9', kind: 'action', action: 'freeze' });
+
+  const view = project(game, { code: 'ABCD' });
+  assert.equal(view.pending.action, 'freeze');
+  assert.deepEqual(view.pending.card, { kind: 'action', action: 'freeze' });
+  assert.equal(view.pending.byId, 'me');
+  assert.ok(view.pending.targets.includes('me'));
+  assert.ok(!/"id":"c\d+"/.test(JSON.stringify(view)), 'still no card identities');
+});
+
+test('publicCard keeps what a card is and drops which card it is', () => {
+  assert.deepEqual(publicCard({ id: 'c4', kind: 'number', value: 12 }), {
+    kind: 'number',
+    value: 12,
+  });
+  assert.deepEqual(publicCard({ id: 'c5', kind: 'modifier', op: 'mul', value: 2 }), {
+    kind: 'modifier',
+    op: 'mul',
+    value: 2,
+  });
+  assert.deepEqual(publicCard({ id: 'c6', kind: 'action', action: 'flip3' }), {
+    kind: 'action',
+    action: 'flip3',
+  });
+  assert.equal(publicCard(null), null);
 });
 
 test('the tally accounts for every card still in the deck', () => {

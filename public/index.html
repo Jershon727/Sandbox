@@ -299,6 +299,14 @@
 
         <div class="dealt" id="dealt" hidden>
           <ol class="feed" id="feed" aria-live="polite" aria-label="What just happened"></ol>
+
+          <!-- An action card you have to aim. The card is shown because being told
+               "you drew Freeze" is weaker than seeing the Freeze. -->
+          <div class="aim" id="aim" hidden>
+            <div class="aim__card" id="aim-card" aria-hidden="true"></div>
+            <p class="aim__text" id="aim-text"></p>
+          </div>
+
           <p class="dealt__status" id="dealt-status">Dealing…</p>
           <div class="dealt__actions" id="dealt-actions">
             <button class="btn btn--stay" id="btn-dstay">

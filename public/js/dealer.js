@@ -118,11 +118,30 @@ export function removeSeat(game, playerId) {
 
 // ── what the table can see ────────────────────────────────────────────────
 
+/**
+ * A card as the table may see it: what it is, without which card it is.
+ *
+ * Dropping the deck id keeps the projection free of card identities, so nothing
+ * about the order of the remaining deck can be inferred from a hand.
+ */
+export const publicCard = (card) =>
+  card
+    ? {
+        kind: card.kind,
+        ...(card.kind === 'number' ? { value: card.value } : {}),
+        ...(card.kind === 'modifier' ? { op: card.op, value: card.value } : {}),
+        ...(card.kind === 'action' ? { action: card.action } : {}),
+      }
+    : null;
+
 const publicHand = (player) => ({
   numbers: player.numbers.map((c) => c.value),
   mods: player.modifiers.map((c) => ({ op: c.op, value: c.value })),
   chance: !!player.secondChance,
   busted: player.status === Status.BUSTED,
+  // The card that did it. Being told only "you busted" leaves you guessing at
+  // which duplicate landed, so the hand keeps it visible until the next deal.
+  bustCard: publicCard(player.bustCard),
 });
 
 /** The remaining deck as counts — countable by anyone, unlike its order. */
@@ -194,7 +213,14 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
     roundOver: request.type === 'round-over' || request.type === 'game-over',
     pending:
       request.type === 'target'
-        ? { action: request.action, byId: request.playerId, targets: request.targets }
+        ? {
+            action: request.action,
+            // The card itself, so the person aiming it sees what they drew
+            // rather than only being told its name.
+            card: publicCard(request.card),
+            byId: request.playerId,
+            targets: request.targets,
+          }
         : null,
   };
 }

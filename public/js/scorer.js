@@ -309,7 +309,18 @@ export class Scorer {
         : `${t?.name ?? ''}'s hand`;
     this.el.card.classList.toggle('is-proxy', !mine);
 
-    const labels = { bust: 'Busted', flip7: 'Flip 7!', save: 'Saved' };
+    const labels = {
+      bust: 'Busted',
+      flip7: 'Flip 7!',
+      save: 'Saved',
+      freeze: 'Frozen',
+      stayed: 'Banked',
+    };
+    // In a dealt game the hand carries its own verdict, so you can tell a banked
+    // 20 from a live 20 without reading the scoreboard.
+    const settled = dealt && !shape.busted && !shape.flip7
+      ? { frozen: 'freeze', stayed: t?.waiting ? null : 'stayed' }[t?.state] ?? null
+      : null;
     const flag =
       this.flag && labels[this.flag]
         ? this.flag
@@ -317,7 +328,7 @@ export class Scorer {
           ? 'bust'
           : shape.flip7
             ? 'flip7'
-            : null;
+            : settled;
     this.el.flag.hidden = !flag;
     if (flag) {
       this.el.flag.textContent = labels[flag];
@@ -326,6 +337,9 @@ export class Scorer {
 
     this.el.card.classList.toggle('is-busted', shape.busted);
     this.el.card.classList.toggle('is-flip7', shape.flip7 && !shape.busted);
+    // A ring round your own hand while the dealer is waiting on you.
+    this.el.card.classList.toggle('is-turn', dealt && this.store.myTurn && !state.pending);
+    this.el.card.classList.toggle('is-frozen', dealt && t?.state === 'frozen');
     renderPips(this.el.pips, hand.numbers.length);
     this.renderHand(hand, shape);
 
@@ -355,8 +369,14 @@ export class Scorer {
    */
   renderAdvice(target) {
     const el = this.el;
-    // Nothing to advise before the cards go out, or while you're sitting a round out.
-    if (!settings.advice || !target || this.store.state?.lobby || target.waiting) {
+    // There is only something to advise when a hit-or-stay decision is actually
+    // in front of you: not in the lobby, not while sitting a round out, not while
+    // aiming an action card, and not on a hand that has already banked or frozen.
+    const state = this.store.state;
+    const dealt = this.store.isDealt;
+    const settled = dealt && target && target.state !== 'active';
+    const aiming = state?.pending?.byId === this.store.myId;
+    if (!settings.advice || !target || state?.lobby || target.waiting || aiming || settled) {
       el.advice.hidden = true;
       return;
     }
@@ -454,10 +474,14 @@ export class Scorer {
       row.classList.toggle('is-flip7', shape.flip7);
       row.classList.toggle('is-leading', leader > 0 && (p.total ?? 0) === leader);
       row.classList.toggle('is-turn', state.turnId === p.id);
+      // Your own turn gets its own treatment: on a phone at a card table the
+      // question is always "is it me?", not "who is it".
+      row.classList.toggle('is-my-turn', state.turnId === p.id && p.id === this.store.myId);
       row.classList.toggle(
         'is-target',
         state.pending?.byId === this.store.myId && state.pending.targets.includes(p.id),
       );
+      row.classList.toggle('is-frozen', p.state === 'frozen');
 
       const rank = document.createElement('span');
       rank.className = 'stand__rank';
@@ -477,6 +501,11 @@ export class Scorer {
       if (p.waiting) tags.append(chip('next round', 'waiting'));
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
+      else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
+        tags.append(chip('frozen', 'freeze'));
+      } else if (this.store.isDealt && state.turnId === p.id) {
+        tags.append(chip(p.id === this.store.myId ? 'your turn' : 'playing', 'turn'));
+      }
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
         tags.append(chip('away', 'away'));
       }
@@ -485,8 +514,18 @@ export class Scorer {
       const round = document.createElement('span');
       round.className = 'stand__round';
       const delta = roundScore(p.hand);
+      // In a dealt game the column says what the number *means*: banked and safe,
+      // frozen out, or still in play. Otherwise a stayed 14 and a live 14 look
+      // identical, and you can't tell who is still deciding.
+      const settled = { stayed: '✓', frozen: '❄', flip7: '★' }[p.state];
       if (shape.busted) round.textContent = 'bust';
-      else if (delta) round.textContent = `+${delta}`;
+      else if (this.store.isDealt && p.waiting) {
+        round.textContent = 'next';
+        round.classList.add('is-idle');
+      } else if (this.store.isDealt && settled) {
+        round.textContent = `+${delta} ${settled}`;
+        round.classList.add('is-settled');
+      } else if (delta) round.textContent = `+${delta}`;
       else {
         round.textContent = '—';
         round.classList.add('is-idle');
@@ -511,8 +550,16 @@ export class Scorer {
 
   renderHand(hand, shape) {
     const host = this.el.hand;
+    // A busting card is the one card a player most wants to see, so it sits at
+    // the end of the hand marked as the killer, with its twin marked as the clash.
+    const clash = hand.bustCard?.kind === 'number' ? hand.bustCard.value : null;
     const items = [
-      ...hand.numbers.map((v, i) => ({ card: { kind: 'number', value: v }, kind: 'number', i })),
+      ...hand.numbers.map((v, i) => ({
+        card: { kind: 'number', value: v },
+        kind: 'number',
+        i,
+        clash: v === clash,
+      })),
       ...hand.mods.map((m, i) => ({
         card: { kind: 'modifier', op: m.op, value: m.value },
         kind: 'mod',
@@ -521,6 +568,9 @@ export class Scorer {
     ];
     if (hand.chance) {
       items.push({ card: { kind: 'action', action: 'chance' }, kind: 'chance', i: 0 });
+    }
+    if (hand.bustCard) {
+      items.push({ card: hand.bustCard, kind: 'bust', i: 0, killer: true });
     }
 
     if (!items.length) {
@@ -543,6 +593,24 @@ export class Scorer {
     for (const item of items) {
       const el = createCard(item.card);
       if (hand.busted) el.classList.add('is-spent');
+      if (item.clash) el.classList.add('is-clash');
+      if (item.killer) {
+        el.classList.add('is-killer');
+        el.classList.remove('is-spent');
+        el.title = `This busted you — you already had ${
+          item.card.kind === 'number' ? `a ${item.card.value}` : 'one'
+        }`;
+        // A labelled wrapper, because .card clips its own overflow and its
+        // ::after is the gloss.
+        const wrap = document.createElement('span');
+        wrap.className = 'killer';
+        const label = document.createElement('span');
+        label.className = 'killer__label';
+        label.textContent = 'busted you';
+        wrap.append(el, label);
+        host.append(wrap);
+        continue;
+      }
       if (this.store.isDealt) {
         // Dealt cards aren't yours to take back.
         host.append(el);

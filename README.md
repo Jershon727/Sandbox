@@ -44,6 +44,38 @@ into a hand already on the table — but the app says so: a **next round** tag n
 to their name, a line in the round's account, and a note on their own screen. The
 next deal brings them in.
 
+### Knowing what just happened to you
+
+Most of a round is other people's turns, and a bot's takes about a second. The
+app is a phone on a table next to a physical game, so every state it puts you in
+has to be readable at a glance and impossible to miss when you look up.
+
+- **Your turn.** The status becomes a pulsing mint pill that says *hit or stay*,
+  Hit and Stay animate in, your hand gets a ring round it, your scoreboard row
+  says *your turn*, and the phone chirps and buzzes once on the transition. It's a
+  toast rather than the centre banner deliberately — a banner would cover the hand
+  at the exact moment you want to read it.
+- **An action card you have to aim.** The card itself appears above the controls
+  with what tapping does, every valid target row is marked *tap*, and the
+  Bust-O-meter hides, because the decision in front of you is a target and not a
+  card.
+- **Freeze or Flip Three played on you.** A centre banner with the card, naming
+  who did it and what you banked. Doing it to yourself is named too.
+- **Banking.** *Banked 34*, then a status line that keeps saying so while the rest
+  of the round plays out, and a `+34 ✓` on the scoreboard — so a banked 34 never
+  looks like a live 34 you could still hit on. Frozen shows `❄`, Flip 7 shows `★`.
+- **Busting.** The card that did it stays lit and labelled *busted you* while the
+  rest of the hand goes flat, and the duplicate it clashed with is ringed. The
+  dealer sends the busting card for exactly this; without it a player is told only
+  that they busted and has to work out why.
+
+Lines in the round's account that involve you are marked, so you can find them
+without reading names.
+
+Haptics follow the **sound** switch, on the grounds that a phone buzzing on a
+wooden table is also a noise. Turning sound off leaves you the visual cues, which
+are the ones that persist rather than fire once.
+
 **The dealer is the relay, not your phone.** That matters for more than
 tidiness:
 

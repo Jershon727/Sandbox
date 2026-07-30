@@ -81,6 +81,9 @@ export function readHand(hand) {
     mods: hand?.mods ?? [],
     chance: !!hand?.chance,
     busted: !!hand?.busted,
+    // Only a dealt game knows which card busted you; tapping your own cards in
+    // scorekeeping mode leaves it null, and the hand renders the same either way.
+    bustCard: hand?.bustCard ?? null,
   };
 }
 

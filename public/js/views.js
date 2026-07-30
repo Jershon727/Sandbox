@@ -75,7 +75,14 @@ export function toast(message, ms = 1900) {
 
 // ── centre banner ─────────────────────────────────────────────────────────
 
-export async function showBanner(text, { tone = '', sub = '', ms = 950 } = {}) {
+/**
+ * The big centre announcement.
+ *
+ * `card` takes a rendered card element. "You busted" or "you were frozen" are
+ * much easier to believe when the card that did it is on the screen, so the
+ * banner can carry one.
+ */
+export async function showBanner(text, { tone = '', sub = '', ms = 950, card = null } = {}) {
   const el = document.getElementById('banner');
   if (!el) return;
   el.dataset.tone = tone;
@@ -87,7 +94,14 @@ export async function showBanner(text, { tone = '', sub = '', ms = 950 } = {}) {
     small.textContent = sub;
     box.append(small);
   }
-  el.replaceChildren(box);
+  if (card) {
+    const holder = document.createElement('span');
+    holder.className = 'banner__card';
+    holder.append(card);
+    el.replaceChildren(holder, box);
+  } else {
+    el.replaceChildren(box);
+  }
   el.classList.add('is-on');
   await wait(ms);
   el.classList.remove('is-on');

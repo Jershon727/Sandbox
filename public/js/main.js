@@ -38,6 +38,8 @@ import {
 } from './views.js';
 import { sfx, setSoundEnabled, unlockSound } from './sound.js';
 import { initFx, setFxEnabled, celebrate } from './fx.js';
+import { createCard } from './cardview.js';
+import { ACTIONS, cardName } from './cards.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -50,6 +52,8 @@ const view = {
   onlineKind: null, // 'relay' | 'firebase' | null
   shownRound: null, // last round summary displayed
   shownWinner: null,
+  wasMyTurn: false, // to catch the moment the turn becomes yours
+  wasMineToAim: false,
 };
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -638,6 +642,9 @@ function onState(state) {
  */
 function renderDealt(state) {
   const dealt = state.kind === 'dealt';
+  // Lets the layout differ: with no keypad, splitting the slack above and below
+  // the hand leaves two dead zones and pushes the turn cue off the bottom.
+  $('screen-room').dataset.mode = dealt ? 'dealt' : 'score';
   $('pad').hidden = dealt;
   $('dealt').hidden = !dealt;
   for (const id of ['btn-undo', 'btn-clear']) $(id).hidden = dealt;
@@ -667,12 +674,16 @@ function renderDealt(state) {
 
   if (myTurn && !pending) {
     const hand = me?.hand ?? { numbers: [] };
-    const banked = hand.numbers.reduce((a, b) => a + b, 0);
+    // Say the number you'd bank, not just "stay" — it's the whole decision.
     $('dstay-sub').textContent = `bank ${roundScoreOf(me)}`;
     $('dhit-sub').textContent = hand.chance ? 'shielded' : 'one more card';
-    void banked;
   }
 
+  // One attribute drives every "it's on you now" cue in the CSS, so the status
+  // pill, the hand and the buttons can't disagree about whose turn it is.
+  $('dealt').dataset.turn = mineToTarget ? 'aim' : myTurn ? 'mine' : over ? 'over' : 'theirs';
+
+  renderAim(state, mineToTarget);
   $('dealt-status').textContent = dealtStatus(state, {
     myTurn,
     pending,
@@ -681,8 +692,87 @@ function renderDealt(state) {
     waiting: !!me?.waiting,
   });
   renderFeed(state.feed ?? []);
+  announceTurn(state, { myTurn, mineToTarget, pending });
   announceSittingOut(state, me);
   announceWhatHappenedToMe(state);
+}
+
+/** The action card you drew and have to point at somebody. */
+function renderAim(state, mineToAim) {
+  const panel = $('aim');
+  panel.hidden = !mineToAim;
+  if (!mineToAim) return;
+
+  const pending = state.pending;
+  const holder = $('aim-card');
+  // Rebuild only when the card changes, so the deal-in animation doesn't restart
+  // on every heartbeat.
+  const key = pending.action;
+  if (holder.dataset.action !== key) {
+    holder.dataset.action = key;
+    holder.replaceChildren(createCard(pending.card ?? { kind: 'action', action: pending.action }));
+  }
+
+  const targets = pending.targets.length;
+  const only = targets === 1 ? state.players?.[pending.targets[0]]?.name : null;
+  $('aim-text').textContent = {
+    freeze: only
+      ? `You drew Freeze. ${only} is the only one left — tap them to end their round.`
+      : 'You drew Freeze. Tap a player to make them bank and sit out.',
+    flip3: only
+      ? `You drew Flip Three. Tap ${only} to make them flip three cards.`
+      : 'You drew Flip Three. Tap a player to make them flip three cards.',
+    gift: only
+      ? `A second Second Chance — tap ${only} to give it to them.`
+      : 'A second Second Chance. Tap a player to give it away.',
+  }[pending.action];
+}
+
+/**
+ * The moment it becomes your turn.
+ *
+ * A phone is face-down on a table for most of a round, so a colour change on a
+ * row is not enough — this is the one cue that has to reach someone who isn't
+ * looking. It fires on the transition, not on every render, so a heartbeat
+ * doesn't buzz your pocket.
+ */
+function announceTurn(state, { myTurn, mineToAim, pending }) {
+  const mine = myTurn && !pending;
+  if (mine && !view.wasMyTurn) {
+    sfx.deal();
+    buzz([28, 60, 28]);
+    // A toast, not the centre banner: your turn is exactly when you want to be
+    // looking at your own hand, and a banner would sit on top of it. The lasting
+    // cue is the styling driven by data-turn.
+    const held = roundScoreOf(state.players?.[store.myId]);
+    toast(held ? `Your turn — holding ${held}` : 'Your turn', 2200);
+    announce('Your turn.');
+  }
+  if (mineToAim && !view.wasMineToAim) {
+    const label = ACTIONS[pending.action === 'gift' ? 'chance' : pending.action]?.label ?? 'a card';
+    if (pending.action === 'freeze') sfx.freeze();
+    else if (pending.action === 'flip3') sfx.flip3();
+    else sfx.save();
+    buzz([18, 40, 18, 40, 18]);
+    showBanner(`You drew ${label}`, {
+      tone: pending.action === 'gift' ? 'save' : pending.action,
+      sub: 'pick who it lands on',
+      ms: 1100,
+      card: createCard(pending.card ?? { kind: 'action', action: pending.action }),
+    });
+  }
+  view.wasMyTurn = mine;
+  view.wasMineToAim = mineToAim;
+}
+
+/** A short buzz where the device supports it. Silent everywhere else. */
+function buzz(pattern) {
+  if (!settings.sound) return; // the sound switch is the "don't draw attention" switch
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    /* not available, or blocked without a gesture */
+  }
 }
 
 /**
@@ -722,22 +812,63 @@ function announceWhatHappenedToMe(state) {
   for (const line of feed) {
     if (line.n <= view.lastAnnounced) continue;
     view.lastAnnounced = line.n;
-    if (line.to !== store.myId || line.who === store.myId) continue;
+    if (line.to !== store.myId) continue;
 
-    const by = state.players?.[line.who]?.name ?? 'Someone';
+    // Who did it, by name — "frozen" without a culprit is the part that annoys
+    // people. Doing it to yourself is worth naming too.
+    const self = line.who === store.myId;
+    const by = self ? 'You' : (state.players?.[line.who]?.name ?? 'Someone');
+    const card = line.card ? createCard(line.card) : null;
+
     if (line.type === 'freeze') {
       sfx.freeze();
+      buzz([40, 70, 40]);
       showBanner('Frozen', {
         tone: 'freeze',
-        sub: `${by} froze you — your round ends here`,
-        ms: 1600,
+        sub: self
+          ? `you froze yourself — banked ${line.score ?? 0}`
+          : `${by} froze you — banked ${line.score ?? 0}, you're out this round`,
+        ms: 1700,
+        card: createCard({ kind: 'action', action: 'freeze' }),
       });
     } else if (line.type === 'flip3-start') {
       sfx.flip3();
-      showBanner('Flip Three', { tone: 'flip3', sub: `${by} made you flip three`, ms: 1400 });
+      buzz([25, 50, 25, 50, 25]);
+      showBanner('Flip Three', {
+        tone: 'flip3',
+        sub: self ? 'you took three yourself' : `${by} made you flip three cards`,
+        ms: 1500,
+        card: createCard({ kind: 'action', action: 'flip3' }),
+      });
     } else if (line.type === 'gift') {
       sfx.save();
-      toast(`${by} gave you a Second Chance`);
+      toast(`${by === 'You' ? 'You kept' : `${by} gave you`} a Second Chance`);
+    } else if (line.type === 'bust' && self) {
+      // The card that did it, on screen. Being told only "busted" leaves you
+      // wondering which duplicate landed.
+      sfx.bust();
+      buzz([60, 40, 90]);
+      showBanner('Busted', {
+        tone: 'bust',
+        sub: `${cardName(line.card)} — you already had one, so this round scores 0`,
+        ms: 1800,
+        card,
+      });
+    } else if (line.type === 'stay' && self) {
+      sfx.stay();
+      showBanner(`Banked ${line.score ?? 0}`, {
+        tone: 'save',
+        sub: "you're safe — sit tight until the round ends",
+        ms: 1300,
+      });
+    } else if (line.type === 'second-chance' && self) {
+      sfx.save();
+      showBanner('Second Chance!', {
+        tone: 'save',
+        sub: `${cardName(line.card)} would have busted you — both cards discarded`,
+        ms: 1500,
+        card,
+      });
     }
   }
 }
@@ -761,7 +892,12 @@ function renderFeed(feed) {
     const el = document.createElement('li');
     el.className = 'feed__line';
     el.dataset.n = String(line.n);
-    if (['bust', 'flip7', 'freeze'].includes(line.type)) el.dataset.tone = line.type;
+    if (['bust', 'flip7', 'freeze', 'flip3-start'].includes(line.type)) {
+      el.dataset.tone = line.type === 'flip3-start' ? 'flip3' : line.type;
+    }
+    // Lines about you are the ones you'd scroll back for, so they don't have to
+    // be found by reading names.
+    if (line.who === store.myId || line.to === store.myId) el.dataset.me = '';
     el.textContent = line.text;
     host.append(el);
   }
@@ -801,14 +937,26 @@ function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
     const label = { freeze: 'Freeze', flip3: 'Flip Three', gift: 'a spare Second Chance' }[
       pending.action
     ];
-    return mineToTarget
-      ? `You drew ${label} — tap a player to use it on.`
-      : `${name(pending.byId)} drew ${label}…`;
+    // The aim panel spells out the choice; this just says who the table waits on.
+    if (mineToTarget) return 'Pick who it lands on.';
+    const target = pending.targets.length === 1 ? name(pending.targets[0]) : null;
+    return target
+      ? `${name(pending.byId)} drew ${label} — aiming at ${target}…`
+      : `${name(pending.byId)} drew ${label} — choosing a target…`;
   }
-  if (myTurn) return 'Your turn.';
-  if (state.turnId) return `${name(state.turnId)} is playing…`;
+  if (myTurn) return 'Your turn — hit or stay';
+
+  // Out of the round but it hasn't ended: say why you can't do anything, rather
+  // than only naming whoever is playing.
+  const mine = state.players?.[store.myId];
+  const playing = state.turnId ? `${name(state.turnId)} is playing…` : 'Dealing…';
+  if (mine && !mine.waiting) {
+    if (mine.hand?.busted) return `You busted — ${playing}`;
+    if (mine.state === 'frozen') return `Frozen out this round — ${playing}`;
+    if (mine.state === 'stayed') return `Banked ${roundScoreOf(mine)} — ${playing}`;
+  }
   void over;
-  return 'Dealing…';
+  return playing;
 }
 
 function onSyncError(error) {

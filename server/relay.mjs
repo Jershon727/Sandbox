@@ -22,6 +22,7 @@ import {
   createDealtGame,
   describeEvent,
   claimSeat,
+  publicCard,
   project,
   applyIntent,
   advance,
@@ -141,6 +142,10 @@ function recordEvents(entry, events) {
       type: event.type,
       who: event.playerId ?? null,
       to: event.targetId ?? event.playerId ?? null,
+      // Enough for a phone to announce the thing properly rather than reprinting
+      // the line: what was banked, and which card did it.
+      ...(event.score === undefined ? {} : { score: event.score }),
+      ...(event.card ? { card: publicCard(event.card) } : {}),
     });
   }
 }

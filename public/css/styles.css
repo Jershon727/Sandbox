@@ -813,6 +813,41 @@ input {
   border-color: color-mix(in oklab, var(--mint) 55%, transparent);
 }
 
+/* The card that caused the announcement, above the words. "You were frozen" is
+   easier to accept when the Freeze is sitting there.
+
+   Flex, not the base grid: two grid rows across a full-screen overlay would push
+   the card and its caption to opposite ends of the phone. */
+.banner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.banner__card {
+  display: grid;
+  place-items: center;
+  animation: bannerCard 0.5s var(--pop) both;
+  transform-origin: center bottom;
+}
+
+.banner__card .card {
+  --cw: 86px;
+  box-shadow: 0 26px 50px -20px rgba(0, 0, 0, 0.95);
+}
+
+@keyframes bannerCard {
+  from {
+    opacity: 0;
+    transform: scale(0.6) rotate(-9deg);
+  }
+  60% {
+    transform: scale(1.06) rotate(3deg);
+  }
+}
+
 /* ── 7. The room: live standings, your hand, the keypad ────────────────── */
 
 .topbar--room {
@@ -1063,6 +1098,17 @@ input {
   flex: none;
   /* splits the slack evenly above and below, keeping the keypad thumb-low */
   margin-block: auto;
+}
+
+/* A dealt game has no keypad, so splitting the slack would leave a gap above the
+   hand *and* below it, with the turn cue stranded at the very bottom. Put the
+   hand under the scoreboard, where you read the two together, and let the slack
+   fall in one place above the controls your thumb wants. */
+[data-mode='dealt'] .tally__card {
+  margin-block: 6px auto;
+}
+
+.tally__card {
   padding: 11px 12px 12px;
   border-radius: 20px;
   background: var(--surface);
@@ -1109,6 +1155,18 @@ input {
 .tally__flag[data-tone='save'] {
   background: color-mix(in oklab, var(--mint) 24%, transparent);
   color: var(--mint);
+}
+
+/* In a dealt game the hand states its own verdict, so a banked 20 doesn't look
+   like a live 20 you could still hit on. */
+.tally__flag[data-tone='stayed'] {
+  background: color-mix(in oklab, var(--mint) 20%, transparent);
+  color: var(--mint);
+}
+
+.tally__flag[data-tone='freeze'] {
+  background: color-mix(in oklab, var(--ice) 24%, transparent);
+  color: var(--ice);
 }
 
 /* the hand you're tapping in — a wrapping row of cards */
@@ -1591,6 +1649,26 @@ input {
 .feed__line[data-tone='freeze'] {
   color: var(--ice);
 }
+.feed__line[data-tone='flip3'] {
+  color: var(--volt);
+}
+
+/* what happened to you, findable without reading every name */
+.feed__line[data-me] {
+  color: var(--ink);
+  font-weight: 800;
+}
+
+.feed__line[data-me]::before {
+  content: '';
+  display: inline-block;
+  width: 4px;
+  height: 4px;
+  margin: 0 5px 1px 0;
+  border-radius: 50%;
+  background: var(--volt);
+  vertical-align: middle;
+}
 
 @keyframes feedIn {
   from {
@@ -1634,6 +1712,69 @@ input {
     0 12px 24px -14px #6a4bff;
 }
 
+/* ── whose turn it is ────────────────────────────────────────────────────── */
+
+/* The single question a player has, over and over, is "is it me?". So being on
+   turn is not a subtle tint — the status becomes a pill, it pulses, and your own
+   hand gets a ring round it. */
+.dealt__status {
+  align-self: center;
+  padding: 5px 14px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  transition:
+    color 0.2s,
+    background 0.2s,
+    border-color 0.2s;
+}
+
+.dealt[data-turn='mine'] .dealt__status {
+  color: #06281a;
+  background: linear-gradient(150deg, #7ff0b6, var(--mint));
+  border-color: transparent;
+  font-weight: 900;
+  animation: turnPulse 1.5s ease-in-out infinite;
+}
+
+.dealt[data-turn='mine'] .dealt__status::before {
+  content: '● ';
+  color: #06281a;
+}
+
+.dealt[data-turn='aim'] .dealt__status {
+  color: #2a1a00;
+  background: var(--gold);
+  font-weight: 900;
+}
+
+@keyframes turnPulse {
+  50% {
+    box-shadow: 0 0 0 7px color-mix(in oklab, var(--mint) 18%, transparent);
+  }
+}
+
+/* Hit and Stay arriving is itself a cue that the dealer is waiting on you. */
+.dealt[data-turn='mine'] .dealt__actions {
+  animation: turnIn 0.28s var(--pop) both;
+}
+
+@keyframes turnIn {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.97);
+  }
+}
+
+/* your own hand, while the dealer waits on you */
+.tally__card.is-turn {
+  border-color: color-mix(in oklab, var(--mint) 70%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--mint) 20%, transparent);
+}
+
+.tally__card.is-frozen {
+  border-color: color-mix(in oklab, var(--ice) 62%, transparent);
+}
+
 /* whose turn it is, on the scoreboard */
 .stand.is-turn {
   border-color: color-mix(in oklab, var(--mint) 62%, transparent);
@@ -1646,10 +1787,41 @@ input {
   color: var(--mint);
 }
 
+.stand.is-my-turn {
+  border-color: var(--mint);
+  background: color-mix(in oklab, var(--mint) 22%, transparent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.stand.is-frozen {
+  border-color: color-mix(in oklab, var(--ice) 45%, transparent);
+}
+
+.stand.is-frozen .stand__name {
+  color: var(--ice);
+}
+
 .stand.is-target {
   border-color: var(--gold);
   background: color-mix(in oklab, var(--gold) 14%, transparent);
   animation: pulse 1.15s ease-in-out infinite;
+}
+
+/* A tappable target should look tappable. */
+.stand.is-target .stand__name::after {
+  content: 'tap';
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--gold);
+  color: #2a1a00;
+  font-size: 0.56rem;
+  font-weight: 900;
+}
+
+.stand__round.is-settled {
+  color: var(--ink-2);
+  font-weight: 700;
 }
 
 .chip[data-tone='bot'] {
@@ -1660,6 +1832,112 @@ input {
 .chip[data-tone='waiting'] {
   background: color-mix(in oklab, var(--ink-3) 22%, transparent);
   color: var(--ink-2);
+}
+
+.chip[data-tone='turn'] {
+  background: var(--mint);
+  color: #06281a;
+}
+
+.chip[data-tone='freeze'] {
+  background: color-mix(in oklab, var(--ice) 30%, transparent);
+  color: var(--ice);
+}
+
+/* ── an action card you have to aim ──────────────────────────────────────── */
+
+.aim {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--gold);
+  background: color-mix(in oklab, var(--gold) 12%, var(--surface));
+  animation: turnIn 0.3s var(--pop) both;
+}
+
+.aim__card .card {
+  --cw: 50px;
+  animation: aimWiggle 2.4s ease-in-out infinite;
+}
+
+.aim__text {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+@keyframes aimWiggle {
+  0%,
+  88%,
+  100% {
+    transform: rotate(-2deg);
+  }
+  94% {
+    transform: rotate(3deg);
+  }
+}
+
+/* ── the card that busted you ────────────────────────────────────────────── */
+
+/* The killing card stays lit while the rest of the hand goes flat, and its twin
+   is ringed, so the duplicate that did it is obvious without explanation.
+
+   The label lives on a wrapper, not on .card::after — that pseudo-element is the
+   card's gloss, and .card clips its own overflow. */
+.killer {
+  position: relative;
+  display: flex;
+  flex: none;
+  padding-bottom: 9px;
+  animation: killerIn 0.45s var(--pop) both;
+}
+
+.killer__label {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--hot);
+  color: #fff;
+  font-size: 0.5rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.card.is-killer {
+  outline: 2px solid var(--hot);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 6px color-mix(in oklab, var(--hot) 22%, transparent);
+}
+
+.card.is-clash {
+  outline: 2px dashed color-mix(in oklab, var(--hot) 70%, transparent);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+@keyframes killerIn {
+  from {
+    opacity: 0;
+    transform: translateY(-14px) rotate(7deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dealt[data-turn='mine'] .dealt__status,
+  .stand.is-my-turn,
+  .aim__card .card,
+  .killer {
+    animation: none;
+  }
 }
 
 /* ── code entry & join ─────────────────────────────────────────────────── */

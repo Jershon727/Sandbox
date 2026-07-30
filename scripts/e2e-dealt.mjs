@@ -231,6 +231,64 @@ check(
   !!roundOne.deckTally && roundOne.deckTally.total === roundOne.deckLeft,
 );
 
+// ── knowing it is your turn ───────────────────────────────────────────────
+// A phone spends most of a round face-down. The cues have to work at a glance.
+const onTurn = await jack.page
+  .waitForFunction(
+    () => {
+      const s = window.__flip7.store;
+      return s.state?.turnId && !s.state.pending ? s.state.turnId : false;
+    },
+    null,
+    { timeout: 20000 },
+  )
+  .then((h) => h.jsonValue())
+  .catch(() => null);
+
+if (onTurn) {
+  const jackId = await jack.page.evaluate(() => window.__flip7.store.myId);
+  const up = onTurn === jackId ? jack : onTurn === samId ? sam : null;
+
+  if (up) {
+    const cues = await up.page.evaluate(() => ({
+      turn: document.getElementById('dealt').dataset.turn,
+      status: document.getElementById('dealt-status').textContent,
+      actions: !document.getElementById('dealt-actions').hidden,
+      handRing: document.getElementById('hand-card').classList.contains('is-turn'),
+      stay: document.getElementById('dstay-sub').textContent,
+      chip: [
+        ...document.querySelectorAll(
+          `.stand[data-player="${window.__flip7.store.myId}"] .chip`,
+        ),
+      ].map((c) => c.textContent),
+    }));
+    check("the phone on turn is marked as the player's own turn", cues.turn === 'mine', cues.turn);
+    check('and says so in words', /your turn/i.test(cues.status), cues.status);
+    check('and offers hit and stay', cues.actions);
+    check('and rings the hand the dealer is waiting on', cues.handRing);
+    check('and the stay button names what it would bank', /^bank \d+$/.test(cues.stay), cues.stay);
+    check(
+      'and the scoreboard row says "your turn"',
+      cues.chip.includes('your turn'),
+      cues.chip.join(','),
+    );
+
+    const other = up === jack ? sam : jack;
+    const theirs = await other.page.evaluate(() => ({
+      turn: document.getElementById('dealt').dataset.turn,
+      status: document.getElementById('dealt-status').textContent,
+      actions: !document.getElementById('dealt-actions').hidden,
+    }));
+    check('the other phone is not told it is theirs', theirs.turn === 'theirs', theirs.turn);
+    check('and names who the table is waiting on', /is playing/.test(theirs.status), theirs.status);
+    check('and is offered nothing to tap', theirs.actions === false);
+  } else {
+    results.push('· turn-cue check skipped: a bot was on turn');
+  }
+} else {
+  results.push('· turn-cue check skipped: no human turn came up');
+}
+
 // ── you cannot play out of turn ───────────────────────────────────────────
 // Which player is up is not ours to choose — the dealer decides, and a bot can
 // freeze someone out before their first turn. So ask whoever *isn't* up.
@@ -287,6 +345,9 @@ if (upNow) {
 let acted = 0;
 let sawBot = false;
 let roundsPlayed = 0;
+// Evidence for the four things a player has to be able to see, collected as the
+// game happens to produce them.
+const seen = { aim: null, killer: null, banked: null };
 
 for (let step = 0; step < 240 && roundsPlayed < 2; step++) {
   const st = await state(jack.page);
@@ -307,6 +368,14 @@ for (let step = 0; step < 240 && roundsPlayed < 2; step++) {
     const s = await state(p.page);
     const me = await p.page.evaluate(() => window.__flip7.store.myId);
     if (s.pending?.byId === me) {
+      // Before answering: is the card on screen, and does it say what to do?
+      seen.aim ??= await p.page.evaluate(() => ({
+        shown: !document.getElementById('aim').hidden,
+        cards: document.querySelectorAll('#aim-card .card').length,
+        text: document.getElementById('aim-text').textContent,
+        turn: document.getElementById('dealt').dataset.turn,
+        targets: document.querySelectorAll('.stand.is-target').length,
+      }));
       await p.page.evaluate(
         (t) => window.__flip7.store.intent({ do: 'target', targetId: t }),
         s.pending.targets[0],
@@ -318,11 +387,89 @@ for (let step = 0; step < 240 && roundsPlayed < 2; step++) {
       acted++;
       await p.page.waitForTimeout(500);
     }
+
+    // Did anything land that a player must be able to read back?
+    const after = await state(p.page);
+    const mine = after?.players?.[me];
+    if (mine?.hand?.busted && !seen.killer) {
+      seen.killer = await p.page.evaluate(() => ({
+        bustCard: window.__flip7.store.state.players[window.__flip7.store.myId].hand.bustCard,
+        killers: document.querySelectorAll('#hand .card.is-killer').length,
+        clashes: document.querySelectorAll('#hand .card.is-clash').length,
+        status: document.getElementById('dealt-status').textContent,
+      }));
+    }
+    if (mine?.state === 'stayed' && !mine.waiting && !seen.banked) {
+      const line = (after.feed ?? []).filter((l) => l.type === 'stay' && l.who === me).at(-1);
+      if (line) {
+        seen.banked = {
+          score: line.score,
+          status: await p.page.textContent('#dealt-status'),
+          round: await p.page.evaluate(
+            (id) => document.querySelector(`.stand[data-player="${id}"] .stand__round`)?.textContent,
+            me,
+          ),
+        };
+      }
+    }
   }
   await jack.page.waitForTimeout(300);
 }
 
 check('a person got to act within two rounds', acted > 0, `acted ${acted}`);
+
+// ── the action card you have to aim ───────────────────────────────────────
+if (seen.aim) {
+  check('an action card to aim shows the card itself', seen.aim.cards === 1, JSON.stringify(seen.aim));
+  check(
+    'and says which card it is and what tapping does',
+    /Freeze|Flip Three|Second Chance/.test(seen.aim.text) && /tap/i.test(seen.aim.text),
+    seen.aim.text,
+  );
+  check('and marks the rows that can be tapped', seen.aim.targets > 0, `${seen.aim.targets}`);
+  check('and the turn cue says you are aiming, not playing', seen.aim.turn === 'aim', seen.aim.turn);
+} else {
+  results.push('· aim-panel check skipped: no action card reached a phone');
+}
+
+// ── busting shows you the card ────────────────────────────────────────────
+if (seen.killer) {
+  check(
+    'a busted hand is told which card busted it',
+    !!seen.killer.bustCard,
+    JSON.stringify(seen.killer.bustCard),
+  );
+  check('and the card is on screen, marked', seen.killer.killers === 1, `${seen.killer.killers}`);
+  check(
+    'with the duplicate it clashed with marked too',
+    seen.killer.bustCard?.kind !== 'number' || seen.killer.clashes >= 1,
+    `${seen.killer.clashes}`,
+  );
+  check('and the status says you busted', /busted/i.test(seen.killer.status), seen.killer.status);
+} else {
+  results.push('· bust-card check skipped: nobody busted');
+}
+
+// ── staying reads as banked, not as idle ──────────────────────────────────
+if (seen.banked) {
+  check(
+    'a stay is reported with the score it banked',
+    typeof seen.banked.score === 'number',
+    JSON.stringify(seen.banked),
+  );
+  check(
+    'the status says what you banked rather than going quiet',
+    /banked \d+/i.test(seen.banked.status) || /round over/i.test(seen.banked.status),
+    seen.banked.status,
+  );
+  check(
+    'and the scoreboard marks it settled rather than still in play',
+    /[✓❄★]/.test(seen.banked.round ?? '') || /bust/.test(seen.banked.round ?? ''),
+    seen.banked.round ?? '',
+  );
+} else {
+  results.push('· banked check skipped: nobody stayed');
+}
 check('the round closes by itself once everyone is done', roundsPlayed > 0 || (await state(jack.page)).roundOver);
 
 // Whether the poll happened to catch the bot mid-turn is luck; what matters is
@@ -520,6 +667,186 @@ check(
     return remaining(window.__flip7.store.state).exact === true;
   }),
 );
+
+// ── the cues a live game only produces by luck ────────────────────────────
+// Whether an action card reaches a phone, and whether anyone busts, is up to the
+// shuffle — so the checks above skip when the cards don't cooperate. These pin
+// the rendering down directly instead: push a room in each state and read the DOM.
+const rendered = await jack.page.evaluate(() => {
+  const { store } = window.__flip7;
+  const me = store.myId;
+  const them = 'rival-seat';
+  const hand = (over = {}) => ({
+    numbers: [],
+    mods: [],
+    chance: false,
+    busted: false,
+    bustCard: null,
+    ...over,
+  });
+  const seat = (name, over = {}) => ({
+    name,
+    order: 0,
+    total: 20,
+    history: [],
+    state: 'active',
+    waiting: false,
+    lastSeen: Date.now(),
+    hand: hand(),
+    ...over,
+  });
+
+  const base = {
+    code: store.state.code,
+    kind: 'dealt',
+    target: 200,
+    round: 3,
+    hostId: me,
+    lobby: false,
+    status: 'playing',
+    roundOver: false,
+    turnId: null,
+    pending: null,
+    feed: [],
+    lastRound: null,
+    deckLeft: 60,
+    deckTally: store.state.deckTally,
+    players: {
+      [me]: seat('Jack'),
+      [them]: seat('Nova', { order: 1, total: 30, isBot: true, hand: hand({ numbers: [4] }) }),
+    },
+  };
+  const show = (room) => {
+    store.state = room;
+    store._emit();
+  };
+  const mine = (over) => ({ ...base.players[me], ...over });
+
+  // (a) You drew Flip Three and have to point it at somebody.
+  show({
+    ...base,
+    pending: { action: 'flip3', card: { kind: 'action', action: 'flip3' }, byId: me, targets: [me, them] },
+  });
+  const aim = {
+    shown: !document.getElementById('aim').hidden,
+    cards: document.querySelectorAll('#aim-card .card[data-action="flip3"]').length,
+    text: document.getElementById('aim-text').textContent,
+    turn: document.getElementById('dealt').dataset.turn,
+    targets: document.querySelectorAll('.stand.is-target').length,
+    status: document.getElementById('dealt-status').textContent,
+  };
+
+  // (b) Somebody else is aiming one, and it is not your decision.
+  show({
+    ...base,
+    pending: {
+      action: 'freeze',
+      card: { kind: 'action', action: 'freeze' },
+      byId: them,
+      targets: [me, them],
+    },
+  });
+  const theirAim = {
+    shown: !document.getElementById('aim').hidden,
+    status: document.getElementById('dealt-status').textContent,
+  };
+
+  // (c) A second 9 busted you.
+  show({
+    ...base,
+    players: {
+      ...base.players,
+      [me]: mine({
+        state: 'busted',
+        hand: hand({ numbers: [9, 4], busted: true, bustCard: { kind: 'number', value: 9 } }),
+      }),
+    },
+  });
+  const bust = {
+    killers: [...document.querySelectorAll('#hand .card.is-killer')].map((c) => c.dataset.value),
+    clashes: [...document.querySelectorAll('#hand .card.is-clash')].map((c) => c.dataset.value),
+    flag: document.getElementById('flag').hidden
+      ? null
+      : document.getElementById('flag').textContent,
+    status: document.getElementById('dealt-status').textContent,
+  };
+
+  // (d) You were frozen out, holding 7.
+  show({
+    ...base,
+    players: { ...base.players, [me]: mine({ state: 'frozen', hand: hand({ numbers: [7] }) }) },
+  });
+  const frozen = {
+    flag: document.getElementById('flag').hidden
+      ? null
+      : document.getElementById('flag').textContent,
+    status: document.getElementById('dealt-status').textContent,
+    chips: [...document.querySelectorAll(`.stand[data-player="${me}"] .chip`)].map(
+      (c) => c.textContent,
+    ),
+    round: document.querySelector(`.stand[data-player="${me}"] .stand__round`)?.textContent,
+  };
+
+  // (e) You banked 7 and are waiting the round out.
+  show({
+    ...base,
+    players: { ...base.players, [me]: mine({ state: 'stayed', hand: hand({ numbers: [7] }) }) },
+  });
+  const banked = {
+    flag: document.getElementById('flag').hidden
+      ? null
+      : document.getElementById('flag').textContent,
+    status: document.getElementById('dealt-status').textContent,
+    round: document.querySelector(`.stand[data-player="${me}"] .stand__round`)?.textContent,
+  };
+
+  return { aim, theirAim, bust, frozen, banked };
+});
+
+check('aiming an action card shows the card', rendered.aim.shown && rendered.aim.cards === 1, JSON.stringify(rendered.aim));
+check(
+  'and names it and says tapping a player is the move',
+  /Flip Three/.test(rendered.aim.text) && /tap/i.test(rendered.aim.text),
+  rendered.aim.text,
+);
+check('and marks every tappable row', rendered.aim.targets === 2, `${rendered.aim.targets}`);
+check('and the turn cue reads as aiming', rendered.aim.turn === 'aim', rendered.aim.turn);
+check('somebody else aiming does not offer you the choice', rendered.theirAim.shown === false);
+check(
+  'but does say who drew what',
+  /Nova drew Freeze/.test(rendered.theirAim.status),
+  rendered.theirAim.status,
+);
+
+check(
+  'busting marks the card that did it',
+  rendered.bust.killers.length === 1 && rendered.bust.killers[0] === '9',
+  JSON.stringify(rendered.bust.killers),
+);
+check(
+  'and marks the duplicate it clashed with',
+  rendered.bust.clashes.includes('9'),
+  JSON.stringify(rendered.bust.clashes),
+);
+check('and flags the hand as busted', rendered.bust.flag === 'Busted', String(rendered.bust.flag));
+check('and says so in the status', /busted/i.test(rendered.bust.status), rendered.bust.status);
+
+check('being frozen flags the hand', rendered.frozen.flag === 'Frozen', String(rendered.frozen.flag));
+check(
+  'and the status says why you cannot play',
+  /frozen out/i.test(rendered.frozen.status),
+  rendered.frozen.status,
+);
+check('and the scoreboard says frozen', rendered.frozen.chips.includes('frozen'), rendered.frozen.chips.join(','));
+check('with the score it was frozen on', rendered.frozen.round === '+7 ❄', String(rendered.frozen.round));
+
+check('banking flags the hand', rendered.banked.flag === 'Banked', String(rendered.banked.flag));
+check(
+  'and the status says what you banked',
+  /banked 7/i.test(rendered.banked.status),
+  rendered.banked.status,
+);
+check('and the scoreboard shows it settled', rendered.banked.round === '+7 ✓', String(rendered.banked.round));
 
 await browser.close();
 cleanup();
