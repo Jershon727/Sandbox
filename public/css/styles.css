@@ -1042,20 +1042,7 @@ input {
   border-color: var(--line-2);
 }
 
-.tally__card.is-proxy .roomhint {
-  flex: none;
-  margin-top: 9px;
-  padding: 10px 13px;
-  border-radius: 13px;
-  background: color-mix(in oklab, var(--volt) 13%, transparent);
-  border: 1px solid color-mix(in oklab, var(--volt) 34%, transparent);
-  font-size: 0.86rem;
-  font-weight: 700;
-  line-height: 1.4;
-  color: var(--ink-2);
-}
-
-.whose {
+.tally__card.is-proxy .whose {
   color: var(--volt);
 }
 
