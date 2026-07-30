@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  describeEvent,
   seatsFor,
   createDealtGame,
   addSeat,
@@ -308,6 +309,65 @@ test('round results carry what the summary needs', () => {
     assert.equal(typeof r.total, 'number');
     assert.equal(typeof r.busted, 'boolean');
   }
+});
+
+// ── following a round you aren't playing ──────────────────────────────────
+
+test('every event a player should notice becomes a readable line', () => {
+  const game = newGame({ seats: { bots: 1 } });
+  const me = game.byId('me');
+  const bot = game.players.find((p) => p.isBot);
+
+  const line = (event) => describeEvent(event, game);
+
+  assert.match(line({ type: 'round-start', round: 3 }), /Round 3/);
+  assert.match(line({ type: 'gain', playerId: me.id, card: { kind: 'number', value: 9 } }), /Jack drew a 9/);
+  assert.match(
+    line({ type: 'gain', playerId: me.id, card: { kind: 'modifier', op: 'mul', value: 2 } }),
+    /x2 multiplier/,
+  );
+  assert.match(line({ type: 'bust', playerId: bot.id, card: { value: 7 } }), /busted on a second 7/);
+  assert.match(line({ type: 'flip7', playerId: me.id }), /FLIP 7/);
+  assert.match(line({ type: 'stay', playerId: me.id, score: 22 }), /stayed on 22/);
+  assert.match(
+    line({ type: 'freeze', playerId: me.id, targetId: bot.id, score: 14 }),
+    new RegExp(`Jack froze ${bot.name} on 14`),
+  );
+  assert.match(line({ type: 'freeze', playerId: me.id, targetId: me.id, score: 8 }), /froze themselves/);
+  assert.match(line({ type: 'flip3-start', playerId: me.id, targetId: bot.id }), /flip three/i);
+  assert.match(line({ type: 'gift', playerId: me.id, targetId: bot.id }), /gave a Second Chance/);
+  assert.match(
+    line({ type: 'second-chance', playerId: me.id, card: { value: 5 } }),
+    /used their Second Chance/,
+  );
+
+  // Bookkeeping the player doesn't need to read stays out of the account.
+  for (const type of ['draw', 'turn', 'defer']) {
+    assert.equal(line({ type, playerId: me.id, card: { kind: 'number', value: 4 } }), null, type);
+  }
+});
+
+test('a bot turn produces something for the table to read', () => {
+  const game = newGame({ seats: { bots: 1 } });
+  dealOut(game);
+  applyIntent(game, 'me', { do: 'stay' });
+
+  const lines = [];
+  for (let i = 0; i < 60; i++) {
+    const step = advance(game);
+    for (const event of step.events ?? []) {
+      const text = describeEvent(event, game);
+      if (text) lines.push(text);
+    }
+    if (step.delay === null) break;
+  }
+
+  assert.ok(lines.length > 0, 'the round left an account of itself');
+  const bot = game.players.find((p) => p.isBot);
+  assert.ok(
+    lines.some((l) => l.includes(bot.name)),
+    `the bot's turn is described — got ${JSON.stringify(lines)}`,
+  );
 });
 
 // ── surviving a restart ───────────────────────────────────────────────────

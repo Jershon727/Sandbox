@@ -1548,6 +1548,58 @@ input {
 
 /* ── the dealt game: hit, stay, and whose turn it is ─────────────────────── */
 
+/* A round of Flip 7 is mostly other people's turns, and a bot's takes about a
+   second. Without a written account of it the round looks like it skipped
+   everyone, so this is load-bearing rather than decoration. */
+.feed {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 5.4em;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--ink-3);
+}
+
+.feed::-webkit-scrollbar {
+  display: none;
+}
+
+.feed__line {
+  animation: feedIn 0.24s var(--ease-out) both;
+}
+
+/* the newest line is the one you're reading */
+.feed__line:last-child {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.feed__line[data-tone='bust'] {
+  color: var(--hot);
+}
+.feed__line[data-tone='flip7'] {
+  color: var(--gold);
+  font-weight: 800;
+}
+.feed__line[data-tone='freeze'] {
+  color: var(--ice);
+}
+
+@keyframes feedIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+
 .dealt {
   flex: none;
   display: flex;

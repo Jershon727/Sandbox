@@ -26,6 +26,7 @@ import {
   resolvedTheme,
 } from './storage.js';
 import {
+  showBanner,
   openModal,
   closeModal,
   closeAllModals,
@@ -45,6 +46,7 @@ const scorer = new Scorer(store);
 
 const view = {
   screen: 'home',
+  lastAnnounced: undefined, // feed line already shown as a banner
   onlineKind: null, // 'relay' | 'firebase' | null
   shownRound: null, // last round summary displayed
   shownWinner: null,
@@ -452,6 +454,7 @@ async function hostGame() {
     });
     view.shownRound = null;
     view.shownWinner = null;
+    view.lastAnnounced = undefined;
     scorer.selectedId = null;
     go('room');
   } catch (err) {
@@ -500,6 +503,7 @@ async function joinGame() {
 
     view.shownRound = null;
     view.shownWinner = null;
+    view.lastAnnounced = undefined;
     scorer.selectedId = null;
     go('room');
     toast(`You're in — room ${code}`);
@@ -654,6 +658,75 @@ function renderDealt(state) {
   }
 
   $('dealt-status').textContent = dealtStatus(state, { myTurn, pending, mineToTarget, over });
+  renderFeed(state.feed ?? []);
+  announceWhatHappenedToMe(state);
+}
+
+/**
+ * Something done *to you* between your turns needs to be impossible to miss.
+ *
+ * Being frozen ends your round on whatever you happen to be holding — sometimes
+ * nothing — and if that only appears as a line in a list it reads as the game
+ * skipping you.
+ */
+function announceWhatHappenedToMe(state) {
+  const feed = state.feed ?? [];
+  if (view.lastAnnounced === undefined) {
+    // Don't replay history when joining or reconnecting.
+    view.lastAnnounced = feed.at(-1)?.n ?? 0;
+    return;
+  }
+
+  for (const line of feed) {
+    if (line.n <= view.lastAnnounced) continue;
+    view.lastAnnounced = line.n;
+    if (line.to !== store.myId || line.who === store.myId) continue;
+
+    const by = state.players?.[line.who]?.name ?? 'Someone';
+    if (line.type === 'freeze') {
+      sfx.freeze();
+      showBanner('Frozen', {
+        tone: 'freeze',
+        sub: `${by} froze you — your round ends here`,
+        ms: 1600,
+      });
+    } else if (line.type === 'flip3-start') {
+      sfx.flip3();
+      showBanner('Flip Three', { tone: 'flip3', sub: `${by} made you flip three`, ms: 1400 });
+    } else if (line.type === 'gift') {
+      sfx.save();
+      toast(`${by} gave you a Second Chance`);
+    }
+  }
+}
+
+/**
+ * A running account of the round. Bot turns take about a second each, so without
+ * this the round appears to end without anyone else playing.
+ */
+function renderFeed(feed) {
+  const host = $('feed');
+  const seen = new Set();
+
+  for (const el of [...host.children]) {
+    const n = Number(el.dataset.n);
+    if (feed.some((line) => line.n === n)) seen.add(n);
+    else el.remove();
+  }
+
+  for (const line of feed) {
+    if (seen.has(line.n)) continue;
+    const el = document.createElement('li');
+    el.className = 'feed__line';
+    el.dataset.n = String(line.n);
+    if (['bust', 'flip7', 'freeze'].includes(line.type)) el.dataset.tone = line.type;
+    el.textContent = line.text;
+    host.append(el);
+  }
+
+  // Keep only the last few on screen, newest at the bottom, scrolled into view.
+  while (host.childElementCount > 6) host.firstElementChild.remove();
+  host.scrollTop = host.scrollHeight;
 }
 
 function roundScoreOf(player) {
@@ -710,7 +783,9 @@ function showRoundSummary(last) {
     })),
     state.target,
   );
-  $('btn-next-round').textContent = `Start round ${state.round}`;
+  $('btn-next-round').textContent = store.isDealt
+    ? `Deal round ${last.round + 1}`
+    : `Start round ${last.round + 1}`;
   openModal('round');
   sfx.count();
 }

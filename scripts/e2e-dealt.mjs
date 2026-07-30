@@ -172,55 +172,73 @@ check(
 );
 
 // ── you cannot play out of turn ───────────────────────────────────────────
-await waitForPrompt(jack.page);
-const jackUp = await myTurn(jack.page);
-if (jackUp) {
-  const before = JSON.stringify((await state(sam.page)).players);
-  await sam.page.evaluate(() => window.__flip7.store.intent({ do: 'hit' }));
-  await sam.page.waitForTimeout(700);
+// Which player is up is not ours to choose — the dealer decides, and a bot can
+// freeze someone out before their first turn. So ask whoever *isn't* up.
+const upNow = await jack.page
+  .waitForFunction(() => window.__flip7.store.state?.turnId ?? null, null, { timeout: 20000 })
+  .then((h) => h.jsonValue())
+  .catch(() => null);
+
+if (upNow) {
+  const notUp = (await jack.page.evaluate(() => window.__flip7.store.myId)) === upNow ? sam : jack;
+  const before = JSON.stringify((await state(notUp.page)).players);
+  await notUp.page.evaluate(() => window.__flip7.store.intent({ do: 'hit' }));
+  await notUp.page.waitForTimeout(800);
   check(
-    "another player's hit is refused while it isn't their turn",
-    JSON.stringify((await state(sam.page)).players) === before,
+    'a hit from someone whose turn it is not changes nothing',
+    JSON.stringify((await state(notUp.page)).players) === before,
   );
 } else {
-  check('the host was prompted first', false, 'expected the host to be up');
+  // A round can end before we catch anyone mid-turn — a Freeze on the opening
+  // deal can do it. The refusal itself is pinned down deterministically by
+  // "you cannot play out of turn" in tests/dealer.test.mjs; this is the
+  // over-the-wire version of the same thing, and only runs when it can.
+  results.push('· out-of-turn check skipped: the round ended before anyone was on turn');
 }
 
-// ── play the round out ────────────────────────────────────────────────────
+// ── play, across rounds, until a person has actually had a turn ────────────
+// One round is not a guarantee: Freeze can end your round before it starts. Over
+// two rounds a person should get to act, and the account should say why if not.
 let acted = 0;
 let sawBot = false;
-for (let i = 0; i < 60; i++) {
+let roundsPlayed = 0;
+
+for (let step = 0; step < 240 && roundsPlayed < 2; step++) {
   const st = await state(jack.page);
   if (!st) break;
-  if (st.roundOver || st.status === 'finished') break;
 
   if (st.turnId && st.players[st.turnId]?.isBot) sawBot = true;
+
+  if (st.roundOver || st.status === 'finished') {
+    roundsPlayed++;
+    if (acted > 0 || st.status === 'finished') break;
+    // Nobody human got a turn that round; deal another and try again.
+    await jack.page.evaluate(() => window.__flip7.store.intent({ do: 'next-round' }));
+    await jack.page.waitForTimeout(900);
+    continue;
+  }
 
   for (const p of [jack, sam]) {
     const s = await state(p.page);
     const me = await p.page.evaluate(() => window.__flip7.store.myId);
     if (s.pending?.byId === me) {
-      // Aim any action card at the first legal target.
-      await p.page.evaluate((t) => window.__flip7.store.intent({ do: 'target', targetId: t }), s.pending.targets[0]);
+      await p.page.evaluate(
+        (t) => window.__flip7.store.intent({ do: 'target', targetId: t }),
+        s.pending.targets[0],
+      );
       acted++;
       await p.page.waitForTimeout(400);
     } else if (s.turnId === me) {
-      // Stay quickly so the round closes; hitting once first to exercise a draw.
       await p.page.evaluate((first) => window.__flip7.store.intent({ do: first ? 'hit' : 'stay' }), acted === 0);
       acted++;
       await p.page.waitForTimeout(500);
     }
   }
-  await jack.page.waitForTimeout(350);
+  await jack.page.waitForTimeout(300);
 }
 
-check('a person took their turn', acted > 0, `acted ${acted}`);
-
-const ended = await jack.page
-  .waitForFunction(() => window.__flip7.store.state?.roundOver === true, null, { timeout: 25000 })
-  .then(() => true)
-  .catch(() => false);
-check('the round closes by itself once everyone is done', ended);
+check('a person got to act within two rounds', acted > 0, `acted ${acted}`);
+check('the round closes by itself once everyone is done', roundsPlayed > 0 || (await state(jack.page)).roundOver);
 
 // Whether the poll happened to catch the bot mid-turn is luck; what matters is
 // that the dealer played it. Its recorded round score is the evidence.
@@ -239,6 +257,28 @@ check(
   JSON.stringify(botPlayed),
 );
 if (sawBot) results.push('  (and the poll caught it mid-turn)');
+
+// The account of the round is the fix for "it ended without everyone playing".
+const feed = await jack.page.evaluate(() => ({
+  lines: (window.__flip7.store.state.feed ?? []).map((l) => l.text),
+  onScreen: [...document.querySelectorAll('#feed .feed__line')].map((el) => el.textContent),
+}));
+check('the round leaves a readable account', feed.lines.length > 0, `${feed.lines.length} lines`);
+check('and it is on screen', feed.onScreen.length > 0, feed.onScreen.at(-1) ?? '');
+const botName = await jack.page.evaluate(
+  () => Object.values(window.__flip7.store.state.players).find((p) => p.isBot).name,
+);
+check(
+  'feed lines say who did what to whom',
+  await jack.page.evaluate(() =>
+    (window.__flip7.store.state.feed ?? []).every((l) => 'who' in l && 'to' in l),
+  ),
+);
+check(
+  "the bot's turn is described, not silent",
+  feed.lines.some((l) => l.includes(botName)),
+  feed.lines.join(' | ').slice(0, 140),
+);
 
 const summaryBoth =
   (await jack.page
@@ -261,6 +301,12 @@ check(
   `round ${(await state(sam.page)).round}`,
 );
 
+check(
+  'the summary button names the round it will deal',
+  /Deal round 2/.test(await jack.page.textContent('#btn-next-round')),
+  await jack.page.textContent('#btn-next-round'),
+);
+
 await jack.page.click('#modal-round [data-close]');
 const advanced = await jack.page
   .waitForFunction((r) => window.__flip7.store.state.round === r + 1, roundBefore, { timeout: 12000 })
@@ -268,18 +314,30 @@ const advanced = await jack.page
   .catch(() => false);
 check('the host deals the next round', advanced);
 
-const dealtAgain = await jack.page
-  .waitForFunction(
-    () => {
-      const s = window.__flip7.store;
-      const me = s.state.players[s.myId];
-      return (me.hand.numbers.length ?? 0) + (me.hand.mods.length ?? 0) > 0;
-    },
-    null,
-    { timeout: 12000 },
-  )
-  .then(() => true)
-  .catch(() => false);
+// The opening deal pauses if someone's first card is an action card, and if
+// that someone is us the dealer is waiting on our target — so answer it.
+let dealtAgain = false;
+for (let i = 0; i < 30; i++) {
+  const s = await state(jack.page);
+  const me = await jack.page.evaluate(() => window.__flip7.store.myId);
+  const hand = s?.players?.[me]?.hand;
+  if ((hand?.numbers?.length ?? 0) + (hand?.mods?.length ?? 0) > 0 || hand?.chance) {
+    dealtAgain = true;
+    break;
+  }
+  // The pause may be on either phone's target, so answer whichever it is.
+  for (const p of [jack, sam]) {
+    const view = await state(p.page);
+    const who = await p.page.evaluate(() => window.__flip7.store.myId);
+    if (view?.pending?.byId === who) {
+      await p.page.evaluate(
+        (t) => window.__flip7.store.intent({ do: 'target', targetId: t }),
+        view.pending.targets[0],
+      );
+    }
+  }
+  await jack.page.waitForTimeout(500);
+}
 check('and everyone gets fresh cards', dealtAgain);
 
 // ── the Bust-O-meter is exact when the dealer knows the deck ──────────────

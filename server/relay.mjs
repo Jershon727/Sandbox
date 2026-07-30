@@ -20,6 +20,7 @@ import { applyPaths, normalizeCode, CODE_LENGTH } from '../public/js/room.js';
 import {
   seatsFor,
   createDealtGame,
+  describeEvent,
   addSeat,
   project,
   applyIntent,
@@ -97,11 +98,42 @@ function touch(entry) {
 
 // ── dealt rooms ───────────────────────────────────────────────────────────
 
+const FEED_LINES = 40;
+
 /** Re-project a dealt game and push it to everyone. */
 function publish(code, entry) {
-  entry.room = project(entry.game, { code, lastRound: entry.lastRound ?? null });
+  entry.room = project(entry.game, {
+    code,
+    lastRound: entry.lastRound ?? null,
+    feed: entry.feed ?? [],
+  });
   touch(entry);
   broadcast(entry);
+}
+
+/**
+ * Record what just happened, so every phone can follow a round it isn't playing.
+ * Without this a bot's whole turn passes in under a second and the round looks
+ * like it skipped people.
+ */
+function recordEvents(entry, events) {
+  if (!events?.length) return;
+  entry.feed ??= [];
+  entry.seq ??= 0;
+  for (const event of events) {
+    const text = describeEvent(event, entry.game);
+    if (!text) continue;
+    // `to` lets a phone tell when something was done *to it* — being frozen out
+    // of a round deserves more than a line in a list.
+    entry.feed.push({
+      n: ++entry.seq,
+      text,
+      type: event.type,
+      who: event.playerId ?? null,
+      to: event.targetId ?? event.playerId ?? null,
+    });
+  }
+  if (entry.feed.length > FEED_LINES) entry.feed.splice(0, entry.feed.length - FEED_LINES);
 }
 
 /**
@@ -116,6 +148,7 @@ function runDealer(code) {
 
   const before = entry.game.round;
   const step = advance(entry.game);
+  recordEvents(entry, step.events);
 
   // A finished round is published once, with its results, so every phone shows
   // the same summary.
@@ -150,7 +183,12 @@ async function persist() {
     const snapshot = {};
     for (const [code, entry] of rooms) {
       snapshot[code] = entry.game
-        ? { dealt: snapshotGame(entry.game), lastRound: entry.lastRound, touched: entry.touched }
+        ? {
+            dealt: snapshotGame(entry.game),
+            lastRound: entry.lastRound,
+            feed: entry.feed,
+            touched: entry.touched,
+          }
         : { room: entry.room, touched: entry.touched };
     }
     // Write then rename, so a crash mid-write can't leave a half-file behind.
@@ -181,8 +219,9 @@ async function restoreRooms() {
           sockets: new Set(),
           touched: saved.touched ?? now,
           lastRound: saved.lastRound ?? null,
+          feed: saved.feed ?? [],
         };
-        entry.room = project(game, { code, lastRound: entry.lastRound });
+        entry.room = project(game, { code, lastRound: entry.lastRound, feed: entry.feed });
         rooms.set(code, entry);
         loaded += 1;
         continue;
@@ -291,7 +330,13 @@ wss.on('connection', (socket, request) => {
           }),
           target: Number(setup.target) || 200,
         });
-        const created = { game, sockets: new Set([socket]), touched: Date.now(), lastRound: null };
+        const created = {
+          game,
+          sockets: new Set([socket]),
+          touched: Date.now(),
+          lastRound: null,
+          feed: [],
+        };
         created.room = project(game, { code });
         rooms.set(code, created);
         log(`create ${code} dealt (${rooms.size} rooms)`);
@@ -340,7 +385,10 @@ wss.on('connection', (socket, request) => {
 
       const result = applyIntent(entry.game, msg.playerId, msg.intent);
       if (!result.ok) return fail(socket, result.why, 'The dealer refused that.');
-      if (result.newRound) entry.lastRound = null;
+      if (result.newRound) {
+        entry.lastRound = null;
+        entry.feed = [];
+      }
       runDealer(code);
       return;
     }

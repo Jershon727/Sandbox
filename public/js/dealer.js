@@ -18,6 +18,7 @@
  */
 
 import { Flip7Game, Status } from './engine.js';
+import { cardName, ACTIONS } from './cards.js';
 import { decideMove, decideTarget, thinkingTime, BOT_ROSTER, STYLES } from './ai.js';
 import { emptyTally } from './odds.js';
 import { makeId } from './room.js';
@@ -121,7 +122,7 @@ export function deckTally(game) {
  * scorekeeping mode uses, so the standings, the hand and the Bust-O-meter all
  * work unchanged.
  */
-export function project(game, { code, lastRound = null } = {}) {
+export function project(game, { code, lastRound = null, feed = [] } = {}) {
   const request = game.request();
   const players = {};
 
@@ -149,6 +150,7 @@ export function project(game, { code, lastRound = null } = {}) {
     winnerId: game.winner?.id ?? null,
     players,
     lastRound,
+    feed,
     deckLeft: game.deck.length,
     deckTally: deckTally(game),
     turnId: request.type === 'move' ? request.playerId : null,
@@ -243,6 +245,50 @@ export function advance(game, rng = game.rng) {
 
   // Round or game over: a person decides when to move on.
   return { delay: null, events: game.drain(), waitingFor: game.players[0]?.id ?? null };
+}
+
+/**
+ * Turn one engine event into a line for the table to read.
+ *
+ * Bot turns resolve in about a second, so without this a player sees the round
+ * end and has no idea what happened — which reads as the game skipping people.
+ * Returns null for events that aren't worth a line.
+ */
+export function describeEvent(event, game) {
+  const who = (id) => (id === undefined ? '' : (game.byId(id)?.name ?? 'Someone'));
+  const name = who(event.playerId);
+
+  switch (event.type) {
+    case 'round-start':
+      return `Round ${event.round} — cards out.`;
+    case 'gain':
+      return `${name} drew ${cardName(event.card)}.`;
+    case 'second-chance':
+      return `${name} used their Second Chance on a second ${event.card.value}.`;
+    case 'bust':
+      return `${name} busted on a second ${event.card.value}.`;
+    case 'flip7':
+      return `${name} hit FLIP 7 — the round ends.`;
+    case 'stay':
+      return `${name} stayed on ${event.score}.`;
+    case 'freeze':
+      return event.playerId === event.targetId
+        ? `${name} froze themselves on ${event.score}.`
+        : `${name} froze ${who(event.targetId)} on ${event.score}.`;
+    case 'flip3-start':
+      return event.playerId === event.targetId
+        ? `${name} takes three.`
+        : `${name} made ${who(event.targetId)} flip three.`;
+    case 'gift':
+      return `${name} gave a Second Chance to ${who(event.targetId)}.`;
+    case 'discard-action':
+      return `${ACTIONS[event.card.action].label} discarded — nobody to use it on.`;
+    case 'reshuffle':
+      return 'Deck reshuffled.';
+    default:
+      // draw/turn/defer are bookkeeping; 'gain' already reports the card.
+      return null;
+  }
 }
 
 /** The per-player results for a round summary, in the shape the UI expects. */
