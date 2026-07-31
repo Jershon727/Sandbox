@@ -59,7 +59,7 @@ export function speedFactor() {
 const DEFAULT_SETUP = {
   name: '',
   target: 200,
-  mode: 'local', // local | online (whichever transport is configured)
+  mode: 'online', // online | local — online whenever a transport is there, see paintHostSetup
   cards: 'real', // real (physical deck, app scores) | dealt (app deals)
   bots: 1,
   botStyle: 'mixed',

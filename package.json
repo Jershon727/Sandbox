@@ -17,7 +17,9 @@
     "relay": "node server/relay.mjs",
     "test:relay": "node scripts/e2e-relay.mjs",
     "test:dealt": "node scripts/e2e-dealt.mjs",
-    "test:all": "npm test && npm run test:e2e && npm run test:relay && npm run test:dealt"
+    "test:all": "npm test && npm run test:e2e && npm run test:fit && npm run test:plane && npm run test:relay && npm run test:dealt",
+    "test:plane": "node scripts/e2e-plane.mjs",
+    "test:fit": "node scripts/e2e-fit.mjs"
   },
   "devDependencies": {
     "firebase-tools": "^15.25.0",

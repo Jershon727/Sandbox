@@ -11,9 +11,10 @@ running totals.
 ## Three ways to play
 
 **The app deals.** A full virtual game: it shuffles, deals, and plays bot
-opponents. Play solo against bots, or share the code and have friends join the
-same dealt table on their own phones. Needs the relay, because the dealer lives
-there — see [Playing a dealt game](#playing-a-dealt-game).
+opponents. Share the code and friends join the same dealt table on their own
+phones, or pass one phone round the table — which works with no network at all,
+because Flip 7 is played face up and there is nothing to hide. See
+[Playing a dealt game](#playing-a-dealt-game).
 
 ## Two ways to score a real deck
 
@@ -76,8 +77,8 @@ Haptics follow the **sound** switch, on the grounds that a phone buzzing on a
 wooden table is also a noise. Turning sound off leaves you the visual cues, which
 are the ones that persist rather than fire once.
 
-**The dealer is the relay, not your phone.** That matters for more than
-tidiness:
+**With a relay, the dealer is the relay rather than your phone.** That matters
+for more than tidiness:
 
 - The deck's *order* never leaves the server. Its *composition* does, because
   every card in Flip 7 is dealt face up and anyone can count them — which is why
@@ -262,6 +263,8 @@ npm test           # scoring, room logic and the Bust-O-meter
 npm run test:e2e   # two phones in one room, in a real browser
 npm run test:relay # two separate devices over a real relay, production shape
 npm run test:dealt # a dealt game: dealer, bots, turn order, hidden deck
+npm run test:plane # a dealt game with the network pulled, on one phone
+npm run test:fit   # it fits on an iPhone SE without scrolling
 npm run test:all   # everything
 npm run relay      # the relay on its own → ws://localhost:8787
 ```
@@ -283,6 +286,7 @@ public/
   js/
     engine.js           the rules, as a deterministic state machine
     dealer.js           a dealt game: projection, intents, snapshot
+    table.js            the dealer's loop, shared by the relay and the browser
     ai.js               bot opponents
     room.js             room shape + the pure functions over it
     store.js            the live room: identity, presence, permissions
@@ -309,6 +313,8 @@ scripts/
   e2e.mjs               drives two pages through a shared room
   e2e-relay.mjs         two separate browser contexts over a real relay
   e2e-dealt.mjs         a dealt game played through the relay
+  e2e-plane.mjs         a dealt game with no network at all, on one phone
+  e2e-fit.mjs           does it fit on the phone in your hand?
   set-config.mjs        turns a pasted Firebase config into firebase-config.js
   check-config.mjs      pre-deploy guard
   bundle.mjs            single-file build
@@ -425,10 +431,21 @@ precise about what survives losing the network.
 kind, openable from a downloads folder or emailed to someone. It's single-phone
 scoring only, by construction.
 
-**Needs a network:** everyone on their own phone, and the dealt game. Both go
-through the relay — the first because the phones have nothing else in common,
-the second because the dealer holds the deck and it can't live on a player's
-device.
+**Also works with no signal: the dealt game, with friends, on one phone.** Host
+with *Cards → Deal for us* and *Pass this one round*, add everyone from the menu,
+and the phone deals. It tells you who to hand it to, and the game survives being
+reloaded mid-flight.
+
+This works because **Flip 7 has no hidden information** — every card is dealt
+face up — so passing one phone round the table gives nothing away that the table
+couldn't already see. The dealer's loop lives in `table.js` and is the same code
+the relay runs, so a game dealt at 30,000 feet plays exactly like one dealt on a
+server. The honest caveat: with no server, the deck lives in the phone's own
+storage, so whoever holds it could go looking. Against a relay that would be
+cheating; on one shared phone it is only cheating yourself.
+
+**Needs a network:** everyone on their *own* phone. There is nothing else for
+several phones to have in common.
 
 **No internet but a local network** is the interesting middle case, and it
 already works with no code and no configuration: run `npm run relay` on a laptop

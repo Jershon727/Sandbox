@@ -17,19 +17,15 @@ import { extname, join, normalize } from 'node:path';
 import { WebSocketServer } from 'ws';
 
 import { applyPaths, normalizeCode, CODE_LENGTH } from '../public/js/room.js';
+import { claimSeat, snapshot as snapshotGame, restore } from '../public/js/dealer.js';
 import {
-  seatsFor,
-  createDealtGame,
-  describeEvent,
-  claimSeat,
-  publicCard,
-  project,
-  applyIntent,
-  advance,
-  roundResults,
-  snapshot as snapshotGame,
-  restore,
-} from '../public/js/dealer.js';
+  createTable,
+  tableFrom,
+  noteFeed,
+  reproject as reprojectTable,
+  request as requestOf,
+  step as stepTable,
+} from '../public/js/table.js';
 
 const PORT = Number(process.env.PORT ?? 8787);
 
@@ -69,12 +65,13 @@ const LIMITS = {
 };
 
 /**
- * code -> { room, sockets, touched, game?, timer?, lastRound? }
+ * code -> { room, sockets, touched, table?, timer? }
  *
  * A scorekeeping room is just `room`, merged from whatever the phones send. A
- * dealt room additionally has `game` — the dealer — and `room` becomes a
- * projection of it that the phones can only read. That's the whole difference:
- * in one mode the players are the authority, in the other the server is.
+ * dealt room additionally has `table` — the dealer, from table.js — and `room`
+ * becomes a projection of it the phones can only read. That's the whole
+ * difference: in one mode the players are the authority, in the other the
+ * server is.
  */
 const rooms = new Map();
 const log = (...args) => console.log(new Date().toISOString(), ...args);
@@ -99,55 +96,14 @@ function touch(entry) {
 
 // ── dealt rooms ───────────────────────────────────────────────────────────
 
-const FEED_LINES = 40;
-
-/** Rebuild the readable view of a dealt game, without sending it anywhere. */
-function reproject(code, entry) {
-  entry.room = project(entry.game, {
-    code,
-    lastRound: entry.lastRound ?? null,
-    feed: entry.feed ?? [],
-  });
-  touch(entry);
-}
-
-/** Re-project a dealt game and push it to everyone. */
-function publish(code, entry) {
-  reproject(code, entry);
-  broadcast(entry);
-}
-
-/** Add one line to the running account of the round. */
-function noteFeed(entry, line) {
-  entry.feed ??= [];
-  entry.seq ??= 0;
-  entry.feed.push({ n: ++entry.seq, ...line });
-  if (entry.feed.length > FEED_LINES) entry.feed.splice(0, entry.feed.length - FEED_LINES);
-}
-
 /**
- * Record what just happened, so every phone can follow a round it isn't playing.
- * Without this a bot's whole turn passes in under a second and the round looks
- * like it skipped people.
+ * A dealt room is a table (see table.js) plus the sockets watching it. The loop
+ * itself lives there, shared with the browser, so a game dealt by the relay and
+ * one dealt by a phone can't drift apart.
  */
-function recordEvents(entry, events) {
-  if (!events?.length) return;
-  for (const event of events) {
-    const text = describeEvent(event, entry.game);
-    if (!text) continue;
-    // `to` lets a phone tell when something was done *to it* — being frozen out
-    // of a round deserves more than a line in a list.
-    noteFeed(entry, {
-      text,
-      type: event.type,
-      who: event.playerId ?? null,
-      to: event.targetId ?? event.playerId ?? null,
-      // Enough for a phone to announce the thing properly rather than reprinting
-      // the line: what was banked, and which card did it.
-      ...(event.score === undefined ? {} : { score: event.score }),
-      ...(event.card ? { card: publicCard(event.card) } : {}),
-    });
-  }
+function reproject(entry) {
+  entry.room = reprojectTable(entry.table);
+  touch(entry);
 }
 
 /**
@@ -157,23 +113,16 @@ function recordEvents(entry, events) {
  */
 function runDealer(code) {
   const entry = rooms.get(code);
-  if (!entry?.game) return;
+  if (!entry?.table) return;
   clearTimeout(entry.timer);
 
-  const before = entry.game.round;
-  const step = advance(entry.game);
-  recordEvents(entry, step.events);
+  const result = stepTable(entry.table);
+  entry.room = entry.table.room;
+  touch(entry);
+  broadcast(entry);
 
-  // A finished round is published once, with its results, so every phone shows
-  // the same summary.
-  if (entry.game.phase === 'round-over' && entry.lastRound?.round !== before) {
-    entry.lastRound = { round: before, results: roundResults(entry.game) };
-  }
-
-  publish(code, entry);
-
-  if (step.delay !== null) {
-    entry.timer = setTimeout(() => runDealer(code), step.delay);
+  if (result.delay !== null) {
+    entry.timer = setTimeout(() => runDealer(code), result.delay);
     entry.timer.unref?.();
   }
 }
@@ -196,11 +145,11 @@ async function persist() {
   try {
     const snapshot = {};
     for (const [code, entry] of rooms) {
-      snapshot[code] = entry.game
+      snapshot[code] = entry.table
         ? {
-            dealt: snapshotGame(entry.game),
-            lastRound: entry.lastRound,
-            feed: entry.feed,
+            dealt: snapshotGame(entry.table.game),
+            lastRound: entry.table.lastRound,
+            feed: entry.table.feed,
             touched: entry.touched,
           }
         : { room: entry.room, touched: entry.touched };
@@ -228,15 +177,18 @@ async function restoreRooms() {
       if (saved.dealt) {
         const game = restore(saved.dealt);
         if (!game) continue;
-        const entry = {
+        const table = tableFrom({
+          code,
           game,
+          feed: saved.feed ?? [],
+          lastRound: saved.lastRound ?? null,
+        });
+        rooms.set(code, {
+          table,
+          room: table.room,
           sockets: new Set(),
           touched: saved.touched ?? now,
-          lastRound: saved.lastRound ?? null,
-          feed: saved.feed ?? [],
-        };
-        entry.room = project(game, { code, lastRound: entry.lastRound, feed: entry.feed });
-        rooms.set(code, entry);
+        });
         loaded += 1;
         continue;
       }
@@ -334,27 +286,16 @@ wss.on('connection', (socket, request) => {
         if (!setup.hostId || !setup.hostName) {
           return fail(socket, 'bad-message', 'A dealt game needs a host.');
         }
-        // The shuffle is the server's, so nobody can pick their own deck.
-        const game = createDealtGame({
-          seats: seatsFor({
-            hostId: setup.hostId,
-            hostName: String(setup.hostName).slice(0, 20),
-            bots: Number(setup.bots) || 0,
-            botStyle: setup.botStyle,
-          }),
-          target: Number(setup.target) || 200,
-          // Wait in a lobby: the host is alone in the room at this instant, and
-          // dealing now would make everyone who joins next sit out round one.
-          deal: false,
-        });
+        // The shuffle is the server's, so nobody can pick their own deck. It
+        // waits in a lobby: the host is alone in the room at this instant, and
+        // dealing now would make everyone who joins next sit out round one.
+        const table = createTable({ code, setup, deal: false });
         const created = {
-          game,
+          table,
+          room: table.room,
           sockets: new Set([socket]),
           touched: Date.now(),
-          lastRound: null,
-          feed: [],
         };
-        created.room = project(game, { code });
         rooms.set(code, created);
         log(`create ${code} dealt (${rooms.size} rooms)`);
         send(socket, { t: 'state', room: created.room });
@@ -385,16 +326,16 @@ wss.on('connection', (socket, request) => {
       // tell the joiner which one it gave them. `you` is the important part: a
       // phone that assumed a different id would drive a seat the dealer has
       // never heard of, and its real seat would never take a turn.
-      if (entry.game) {
+      if (entry.table) {
         let seat = null;
         if (msg.seat?.id || msg.seat?.name) {
-          seat = claimSeat(entry.game, { id: msg.seat.id, name: msg.seat.name });
+          seat = claimSeat(entry.table.game, { id: msg.seat.id, name: msg.seat.name });
           if (!seat) return fail(socket, 'room-full', 'That table is full.');
         }
 
         if (seat?.added) {
-          const player = entry.game.byId(seat.playerId);
-          noteFeed(entry, {
+          const player = entry.table.game.byId(seat.playerId);
+          noteFeed(entry.table, {
             text: seat.late
               ? `${player.name} joined — dealt in next round.`
               : `${player.name} joined.`,
@@ -403,7 +344,7 @@ wss.on('connection', (socket, request) => {
             to: seat.playerId,
             late: seat.late,
           });
-          reproject(code, entry);
+          reproject(entry);
           // Everyone else hears about the arrival; the arrival gets the version
           // that also says which seat is theirs.
           broadcast(entry, socket);
@@ -419,16 +360,12 @@ wss.on('connection', (socket, request) => {
 
     if (msg.t === 'intent') {
       if (!entry) return fail(socket, 'room-missing', 'That game has ended.');
-      if (!entry.game) return fail(socket, 'not-dealt', 'This room is keeping score, not dealing.');
+      if (!entry.table) return fail(socket, 'not-dealt', 'This room is keeping score, not dealing.');
       if (!entry.sockets.has(socket)) return fail(socket, 'not-joined', 'Join the room first.');
       if (typeof msg.playerId !== 'string') return fail(socket, 'bad-message', 'Who is asking?');
 
-      const result = applyIntent(entry.game, msg.playerId, msg.intent);
+      const result = requestOf(entry.table, msg.playerId, msg.intent);
       if (!result.ok) return fail(socket, result.why, 'The dealer refused that.');
-      if (result.newRound) {
-        entry.lastRound = null;
-        entry.feed = [];
-      }
       runDealer(code);
       return;
     }
@@ -438,7 +375,7 @@ wss.on('connection', (socket, request) => {
       // The dealer is the only writer in a dealt game. Heartbeats and stray
       // writes are simply dropped rather than treated as an error, so a client
       // switching modes doesn't spew failures.
-      if (entry.game) return;
+      if (entry.table) return;
       if (!entry.sockets.has(socket)) {
         return fail(socket, 'not-joined', 'Join the room before writing to it.');
       }
@@ -512,7 +449,7 @@ http.on('error', (err) => {
 
 await restoreRooms();
 // Resume any dealt game that was mid-turn when we stopped.
-for (const [code, entry] of rooms) if (entry.game) runDealer(code);
+for (const [code, entry] of rooms) if (entry.table) runDealer(code);
 
 http.listen(PORT, () => {
   log(

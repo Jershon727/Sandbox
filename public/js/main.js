@@ -54,6 +54,7 @@ const view = {
   shownWinner: null,
   wasMyTurn: false, // to catch the moment the turn becomes yours
   wasMineToAim: false,
+  lastActor: undefined, // on a shared phone, who was last handed it
 };
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -305,16 +306,18 @@ function paintHostSetup() {
     },
   );
 
-  // Real cards vs the app dealing. Dealing needs the relay, since the dealer
-  // lives there — nobody should be able to deal themselves a card.
-  const canDeal = view.onlineKind === 'relay';
-  if (!canDeal && setup.cards === 'dealt') saveSetup({ cards: 'real' });
+  // "Their own phones" is the better default when it can actually work, so the
+  // stored default is online and this walks it back when nothing can serve it —
+  // otherwise the picker shows a selected option that is also disabled.
+  if (!view.onlineKind && setup.mode === 'online') saveSetup({ mode: 'local' });
 
+  // Real cards vs the app dealing. Either works without a network: with a relay
+  // the dealer lives there, and without one this device deals.
   segment(
     $('host-cards'),
     [
       { value: 'real', label: 'Real cards' },
-      { value: 'dealt', label: 'Deal for us', disabled: !canDeal },
+      { value: 'dealt', label: 'Deal for us' },
     ],
     setup.cards,
     (v) => {
@@ -324,15 +327,16 @@ function paintHostSetup() {
   );
 
   const dealing = setup.cards === 'dealt';
+  const online = setup.mode === 'online' && view.onlineKind;
   $('host-cards-hint').textContent = dealing
-    ? 'The app shuffles and deals. Everyone taps Hit or Stay on their own phone.'
-    : canDeal
-      ? "You're playing with a physical deck; the app keeps score."
-      : "You're playing with a physical deck; the app keeps score. Dealing needs the relay.";
+    ? online
+      ? 'The app shuffles and deals. Everyone taps Hit or Stay on their own phone.'
+      : 'The app shuffles and deals, and the phone goes round the table. Every card in Flip 7 is face up, so there is nothing to hide.'
+    : "You're playing with a physical deck; the app keeps score.";
 
   $('field-bots').hidden = !dealing;
   $('field-botstyle').hidden = !dealing;
-  $('field-mode').hidden = dealing;
+  $('field-mode').hidden = false;
 
   if (dealing) {
     segment(
@@ -349,14 +353,13 @@ function paintHostSetup() {
       paintHostSetup();
     });
     $('host-botstyle-hint').textContent = BOT_STYLE_HINTS[setup.botStyle] ?? '';
-    return;
   }
 
   segment(
     $('host-mode'),
     [
       { value: 'online', label: 'Their own phones', disabled: !view.onlineKind },
-      { value: 'local', label: 'Just this one' },
+      { value: 'local', label: dealing ? 'Pass this one round' : 'Just this one' },
     ],
     setup.mode,
     (v) => {
@@ -365,11 +368,14 @@ function paintHostSetup() {
     },
   );
 
+  const local = dealing
+    ? 'One phone for the table — it tells you who to pass it to. Works with no signal at all.'
+    : 'One phone for the table — you tap for everybody.';
   $('host-mode-hint').textContent = view.onlineKind
     ? setup.mode === 'online'
       ? 'Everyone joins with the room code and taps their own cards.'
-      : 'One phone for the table — you tap for everybody.'
-    : 'Online rooms need a relay address in relay-config.js, or a Firebase config. Until then, one phone keeps score for the table.';
+      : local
+    : `No online rooms available right now — ${local[0].toLowerCase()}${local.slice(1)}`;
 }
 
 function buildSettings() {
@@ -464,7 +470,7 @@ async function hostGame() {
   busy(btn, true, 'Creating…');
   try {
     const dealt = setup.cards === 'dealt';
-    const mode = dealt ? 'relay' : setup.mode === 'online' ? view.onlineKind : 'local';
+    const mode = setup.mode === 'online' && view.onlineKind ? view.onlineKind : 'local';
     const code = await store.host({
       name,
       target: setup.target,
@@ -562,9 +568,6 @@ async function shareRoom() {
   const code = store.code;
   if (!code) return;
   const link = `${location.origin}${location.pathname}?room=${code}`;
-  const text = store.isOnline
-    ? `Join my Flip 7 game — code ${code}\n${link}`
-    : `Flip 7 room ${code}`;
 
   if (store.isOnline && navigator.share) {
     try {
@@ -574,9 +577,19 @@ async function shareRoom() {
       /* dismissed — fall through to copying */
     }
   }
+  // Offline there is nothing for another device to join, so say so rather than
+  // handing over a code that will only fail on someone else's phone.
+  if (!store.isOnline) {
+    return toast(
+      store.isPassAndPlay
+        ? 'This game lives on this phone — pass it round rather than sharing'
+        : `Room code ${code} — this device only`,
+    );
+  }
+
   try {
-    await navigator.clipboard.writeText(store.isOnline ? link : code);
-    toast(store.isOnline ? 'Join link copied' : `Room code ${code} copied`);
+    await navigator.clipboard.writeText(link);
+    toast('Join link copied');
   } catch {
     toast(`Room code: ${code}`);
   }
@@ -634,9 +647,13 @@ function onState(state) {
     playerList(state).length < 2 || (state.lobby && store.isOnline && store.isHost);
   hint.hidden = !gathering;
   if (gathering) {
+    // Never invite someone to read a code out when nothing can act on it: with
+    // no transport, other devices have no way to reach this game at all.
     hint.textContent = store.isOnline
       ? `Read out the code ${state.code} — players appear here as they join.`
-      : 'Add everyone at the table from the menu, then tap their cards as they land.';
+      : store.isPassAndPlay
+        ? 'Add everyone from the menu, then pass the phone round as it asks.'
+        : 'Add everyone at the table from the menu, then tap their cards as they land.';
   }
 
   // The host publishes the summary; every phone shows it when it appears.
@@ -669,10 +686,10 @@ function renderDealt(state) {
   $('waiting').hidden = dealt || store.isHost;
   if (!dealt) return;
 
-  const me = state.players?.[store.myId];
-  const myTurn = state.turnId === store.myId;
+  const me = state.players?.[store.actingId];
+  const myTurn = state.turnId === store.actingId;
   const pending = state.pending;
-  const mineToTarget = pending?.byId === store.myId;
+  const mineToTarget = pending?.byId === store.actingId;
   const over = state.status === 'finished' || state.roundOver;
 
   // The same button opens the game from the lobby and turns each round over, so
@@ -709,7 +726,7 @@ function renderDealt(state) {
     waiting: !!me?.waiting,
   });
   renderFeed(state.feed ?? []);
-  announceTurn(state, { myTurn, mineToTarget, pending });
+  announceTurn(state, { myTurn, mineToAim: mineToTarget, pending });
   announceSittingOut(state, me);
   announceWhatHappenedToMe(state);
 }
@@ -755,15 +772,41 @@ function renderAim(state, mineToAim) {
  */
 function announceTurn(state, { myTurn, mineToAim, pending }) {
   const mine = myTurn && !pending;
-  if (mine && !view.wasMyTurn) {
+  const acting = store.actingId;
+  let passed = false;
+
+  // On a shared phone the cue that matters is *who to hand it to*, and it has to
+  // be unmissable — nobody is watching a screen that isn't theirs yet.
+  if (store.isPassAndPlay && acting && acting !== view.lastActor) {
+    const first = view.lastActor === undefined;
+    view.lastActor = acting;
+    if (!first && (mine || mineToAim)) {
+      const name = state.players?.[acting]?.name ?? 'the next player';
+      sfx.deal();
+      buzz([40, 60, 40]);
+      showBanner(`Pass to ${name}`, {
+        tone: 'turn',
+        sub: mineToAim
+          ? 'an action card to aim'
+          : `holding ${roundScoreOf(state.players?.[acting])}`,
+        ms: 1400,
+      });
+      announce(`Pass the phone to ${name}.`);
+      passed = true;
+    }
+  }
+
+  if (mine && !view.wasMyTurn && !passed) {
     sfx.deal();
     buzz([28, 60, 28]);
     // A toast, not the centre banner: your turn is exactly when you want to be
     // looking at your own hand, and a banner would sit on top of it. The lasting
     // cue is the styling driven by data-turn.
-    const held = roundScoreOf(state.players?.[store.myId]);
-    toast(held ? `Your turn — holding ${held}` : 'Your turn', 2200);
-    announce('Your turn.');
+    const held = roundScoreOf(state.players?.[acting]);
+    const who = store.isPassAndPlay ? (state.players?.[acting]?.name ?? 'You') : 'Your';
+    const label = store.isPassAndPlay ? `${who}'s turn` : 'Your turn';
+    toast(held ? `${label} — holding ${held}` : label, 2200);
+    announce(`${label}.`);
   }
   if (mineToAim && !view.wasMineToAim) {
     const label = ACTIONS[pending.action === 'gift' ? 'chance' : pending.action]?.label ?? 'a card';
@@ -829,11 +872,11 @@ function announceWhatHappenedToMe(state) {
   for (const line of feed) {
     if (line.n <= view.lastAnnounced) continue;
     view.lastAnnounced = line.n;
-    if (line.to !== store.myId) continue;
+    if (line.to !== store.actingId) continue;
 
     // Who did it, by name — "frozen" without a culprit is the part that annoys
     // people. Doing it to yourself is worth naming too.
-    const self = line.who === store.myId;
+    const self = line.who === store.actingId;
     const by = self ? 'You' : (state.players?.[line.who]?.name ?? 'Someone');
     const card = line.card ? createCard(line.card) : null;
 
@@ -914,7 +957,7 @@ function renderFeed(feed) {
     }
     // Lines about you are the ones you'd scroll back for, so they don't have to
     // be found by reading names.
-    if (line.who === store.myId || line.to === store.myId) el.dataset.me = '';
+    if (line.who === store.actingId || line.to === store.actingId) el.dataset.me = '';
     el.textContent = line.text;
     host.append(el);
   }
@@ -940,9 +983,11 @@ function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
   if (state.status === 'finished') return 'Game over.';
   if (state.lobby) {
     if (!store.isHost) return `Waiting for ${name(state.hostId)} to deal.`;
-    return playerList(state).length < 2
-      ? 'Waiting for someone to join — read out the code, or add a bot.'
-      : 'Everyone in? Tap deal and the cards go out.';
+    if (playerList(state).length >= 2) return 'Everyone in? Tap deal and the cards go out.';
+    // Offline there is no code for anyone to join with, so don't suggest one.
+    return store.isPassAndPlay
+      ? 'Add players from the menu, or a bot, then deal.'
+      : 'Waiting for someone to join — read out the code, or add a bot.';
   }
   if (state.roundOver) {
     return store.isHost ? 'Round over.' : `Round over — waiting for ${name(state.hostId)}.`;
@@ -965,7 +1010,7 @@ function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
 
   // Out of the round but it hasn't ended: say why you can't do anything, rather
   // than only naming whoever is playing.
-  const mine = state.players?.[store.myId];
+  const mine = state.players?.[store.actingId];
   const playing = state.turnId ? `${name(state.turnId)} is playing…` : 'Dealing…';
   if (mine && !mine.waiting) {
     if (mine.hand?.busted) return `You busted — ${playing}`;

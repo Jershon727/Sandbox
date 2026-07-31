@@ -177,8 +177,35 @@ export class Store {
     return this.state?.turnId ?? null;
   }
 
+  /**
+   * One phone, everybody playing on it — a dealt game with nothing to sync to.
+   *
+   * This is the mode for a plane. It works because Flip 7 has no hidden
+   * information: every card is dealt face up, so passing the phone round the
+   * table gives nothing away that the table couldn't already see.
+   */
+  get isPassAndPlay() {
+    return this.isDealt && !this.isOnline;
+  }
+
+  /**
+   * Who this device is playing as right now.
+   *
+   * Normally that's you. On a shared phone it's whoever the dealer is waiting
+   * on, and it stays on that person through the pauses in between — bot turns
+   * and dealing included — so the screen doesn't flick between hands while
+   * nobody is being asked for anything.
+   */
+  get actingId() {
+    if (!this.isPassAndPlay) return this.myId;
+    const up = this.state?.pending?.byId ?? this.state?.turnId ?? null;
+    const player = up ? this.state?.players?.[up] : null;
+    if (player && !player.isBot) this._acting = up;
+    return this._acting ?? this.myId;
+  }
+
   get myTurn() {
-    return !!this.myId && this.state?.turnId === this.myId;
+    return !!this.actingId && this.state?.turnId === this.actingId;
   }
 
   async host({ name, target = 200, mode = 'local', dealt = false, bots = 1, botStyle = 'mixed' }) {
@@ -333,11 +360,15 @@ export class Store {
     }
   }
 
-  /** Ask the dealer to do something on our behalf. */
+  /** Ask the dealer to do something on behalf of whoever is playing. */
   async intent(intent) {
-    if (!this.sync?.intent || !this.code || !this.myId) return;
+    // Dealing the next round is the host's call, not the last player's — which
+    // on a shared phone are different people.
+    const hostOnly = intent?.do === 'next-round' || intent?.do === 'rematch';
+    const who = hostOnly ? this.myId : this.actingId;
+    if (!this.sync?.intent || !this.code || !who) return;
     try {
-      await this.sync.intent(this.code, this.myId, intent);
+      await this.sync.intent(this.code, who, intent);
     } catch (err) {
       this._fail(err);
     }
@@ -346,6 +377,16 @@ export class Store {
   /** Add somebody who isn't holding a phone. Host only. */
   async addPlayer(name) {
     if (!this.isHost) return null;
+
+    // In a dealt game seats belong to the dealer, so ask it for one rather than
+    // writing a player into the room — that write would be ignored. This is how
+    // friends get into a game on a single shared phone.
+    if (this.isDealt) {
+      if (!this.sync?.join) return null;
+      await this.sync.join(this.code, { name });
+      return null;
+    }
+
     const id = makeId();
     await this.update({ [`players/${id}`]: newPlayer(name, nextOrder(this.state)) });
     return id;

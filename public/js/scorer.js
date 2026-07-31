@@ -42,6 +42,8 @@ export class Scorer {
     this.flag = null; // transient badge: bust | flip7 | save
     this.lastFlip7 = null; // so a Flip 7 is only announced once
     this.dealSource = null;
+    this.scrolledTo = null; // whose row the scoreboard is following
+    this.userScrolled = false; // ...unless somebody scrolled it themselves
   }
 
   mount() {
@@ -72,6 +74,11 @@ export class Scorer {
     this.buildPad();
     this.el.undo.addEventListener('click', () => this.undo());
     this.el.clear.addEventListener('click', () => this.clearHand());
+    this.el.standings.addEventListener('pointerdown', () => {
+      // Somebody looking around the table owns the scroll until the turn moves on.
+      this.userScrolled = true;
+    });
+    this.el.standings.addEventListener('scroll', () => this.markScrollEdges(), { passive: true });
 
     this.el.adviceRow.addEventListener('click', () => {
       const open = this.el.adviceWhy.hidden;
@@ -87,7 +94,7 @@ export class Scorer {
     const state = this.store.state;
     if (!state) return null;
     const id =
-      this.selectedId && state.players?.[this.selectedId] ? this.selectedId : this.store.myId;
+      this.selectedId && state.players?.[this.selectedId] ? this.selectedId : this.store.actingId;
     return state.players?.[id] ? { id, ...state.players[id] } : null;
   }
 
@@ -99,7 +106,7 @@ export class Scorer {
     // In a dealt game, tapping a player is how you aim an action card.
     const pending = this.store.state?.pending;
     if (this.store.isDealt) {
-      if (pending?.byId === this.store.myId && pending.targets.includes(playerId)) {
+      if (pending?.byId === this.store.actingId && pending.targets.includes(playerId)) {
         sfx.tap();
         this.store.intent({ do: 'target', targetId: playerId });
       } else {
@@ -300,7 +307,7 @@ export class Scorer {
     const hand = this.hand;
     const shape = handShape(hand);
     const score = scoreHand(shape);
-    const mine = t?.id === this.store.myId;
+    const mine = t?.id === this.store.actingId;
 
     this.el.whose.textContent = dealt
       ? 'Your hand'
@@ -345,7 +352,15 @@ export class Scorer {
 
     this.el.score.textContent = String(score);
     this.el.score.classList.toggle('is-zero', score === 0);
-    this.el.formula.textContent = formula(shape);
+    // The empty-hand prompt tells you to tap your cards, which is an instruction
+    // for scorekeeping. When the app deals, there is nothing for you to tap.
+    const empty = !hand.numbers.length && !hand.mods.length;
+    this.el.formula.textContent =
+      dealt && empty && !shape.busted
+        ? t?.waiting
+          ? 'Sitting this round out'
+          : 'The dealer is dealing'
+        : formula(shape);
     this.renderPadState(hand);
     this.renderAdvice(t);
 
@@ -375,7 +390,7 @@ export class Scorer {
     const state = this.store.state;
     const dealt = this.store.isDealt;
     const settled = dealt && target && target.state !== 'active';
-    const aiming = state?.pending?.byId === this.store.myId;
+    const aiming = state?.pending?.byId === this.store.actingId;
     if (!settings.advice || !target || state?.lobby || target.waiting || aiming || settled) {
       el.advice.hidden = true;
       return;
@@ -399,7 +414,7 @@ export class Scorer {
     el.adviceRec.textContent = a.headline;
     el.adviceReason.textContent = a.why;
 
-    const whose = target.id === this.store.myId ? 'You' : target.name;
+    const whose = target.id === this.store.actingId ? 'You' : target.name;
     el.adviceRow.setAttribute(
       'aria-label',
       `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
@@ -442,7 +457,7 @@ export class Scorer {
     if (key === this.lastFlip7) return;
     this.lastFlip7 = key;
 
-    const mine = hit.id === this.store.myId;
+    const mine = hit.id === this.store.actingId;
     sfx.flip7();
     burstFrom(mine ? this.el.card : this.el.standings);
     showBanner('FLIP 7!', {
@@ -458,7 +473,7 @@ export class Scorer {
     const rows = standings(state);
     const now = Date.now();
     const leader = rows.length ? rows[0].total ?? 0 : 0;
-    const selectedId = this.target?.id ?? this.store.myId;
+    const selectedId = this.target?.id ?? this.store.actingId;
 
     host.replaceChildren();
     rows.forEach((p, i) => {
@@ -476,10 +491,10 @@ export class Scorer {
       row.classList.toggle('is-turn', state.turnId === p.id);
       // Your own turn gets its own treatment: on a phone at a card table the
       // question is always "is it me?", not "who is it".
-      row.classList.toggle('is-my-turn', state.turnId === p.id && p.id === this.store.myId);
+      row.classList.toggle('is-my-turn', state.turnId === p.id && p.id === this.store.actingId);
       row.classList.toggle(
         'is-target',
-        state.pending?.byId === this.store.myId && state.pending.targets.includes(p.id),
+        state.pending?.byId === this.store.actingId && state.pending.targets.includes(p.id),
       );
       row.classList.toggle('is-frozen', p.state === 'frozen');
 
@@ -504,7 +519,7 @@ export class Scorer {
       else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
         tags.append(chip('frozen', 'freeze'));
       } else if (this.store.isDealt && state.turnId === p.id) {
-        tags.append(chip(p.id === this.store.myId ? 'your turn' : 'playing', 'turn'));
+        tags.append(chip(p.id === this.store.actingId ? 'your turn' : 'playing', 'turn'));
       }
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
         tags.append(chip('away', 'away'));
@@ -546,6 +561,50 @@ export class Scorer {
       row.addEventListener('click', () => this.select(p.id));
       host.append(row);
     });
+
+    this.keepMyRowVisible();
+  }
+
+  /**
+   * On a short phone the scoreboard is the part that scrolls, and the row you
+   * care about is your own — or, on a shared phone, whoever is up. A half-cut
+   * row at the fold reads as a broken layout rather than a list with more in it,
+   * so scroll it into view and mark the edge as having more below.
+   *
+   * Only when the row it should be showing changes, so it never fights someone
+   * scrolling the table deliberately.
+   */
+  keepMyRowVisible() {
+    const box = this.el.standings;
+    const wanted = this.store.actingId;
+
+    // A new person to follow means the table moved on, so take the scroll back.
+    if (wanted !== this.scrolledTo) {
+      this.scrolledTo = wanted;
+      this.userScrolled = false;
+    }
+
+    const row = wanted ? box.querySelector(`.stand[data-player="${wanted}"]`) : null;
+    if (row && !this.userScrolled) {
+      const top = row.offsetTop;
+      const bottom = top + row.offsetHeight;
+      // Adjust this container only — never let it scroll an ancestor. Checked
+      // on every render, not just when the row changes: the list grows as
+      // people join, so a row that fit a moment ago may not now.
+      if (top < box.scrollTop) box.scrollTop = top;
+      else if (bottom > box.scrollTop + box.clientHeight) box.scrollTop = bottom - box.clientHeight;
+    }
+
+    this.markScrollEdges();
+  }
+
+  /** Fade the edge that has more beyond it, so a clipped row looks deliberate. */
+  markScrollEdges() {
+    const box = this.el.standings;
+    const scrollable = box.scrollHeight > box.clientHeight + 1;
+    box.classList.toggle('is-scrollable', scrollable);
+    box.classList.toggle('has-more', scrollable && box.scrollTop + box.clientHeight < box.scrollHeight - 1);
+    box.classList.toggle('has-above', scrollable && box.scrollTop > 1);
   }
 
   renderHand(hand, shape) {

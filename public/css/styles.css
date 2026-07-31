@@ -213,6 +213,18 @@ input {
   display: none;
   flex-direction: column;
   padding: calc(var(--safe-t) + 10px) 14px calc(var(--safe-b) + 10px);
+  /* Setup screens scroll through .sheet, which is the inner scroller. This is a
+     safety net for any screen that hasn't got one, so a long form can never
+     strand its own button below the fold on a short phone. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The game itself is a fixed screen, not a document. If something doesn't fit,
+   the part that scrolls is chosen deliberately — the scoreboard — rather than
+   the whole page sliding your hand and the controls off the bottom. */
+.screen[data-screen='room'] {
+  overflow: hidden;
 }
 
 .screen.is-active {
@@ -890,19 +902,46 @@ input {
 }
 
 /* the live scoreboard — the reason everyone has the app open */
+
+/* It is also the only part of the screen with no natural size: eight players
+   take twice the room of four. So it is the one thing allowed to give. It keeps
+   its full height while there's space and scrolls inside itself when there
+   isn't, which keeps your hand and the controls on screen on every phone —
+   nothing below it should ever be pushed out of reach. */
 .standings {
-  flex: none;
+  flex: 0 1 auto;
+  min-height: 92px;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  max-height: 42vh;
   overflow-y: auto;
+  overscroll-behavior: contain;
   scrollbar-width: none;
   padding-bottom: 2px;
 }
 
 .standings::-webkit-scrollbar {
   display: none;
+}
+
+/* Fade whichever edge has more beyond it. A row cut off at a hard line reads as
+   a broken layout; the same row under a fade reads as a list you can scroll. */
+.standings.has-more {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 22px), transparent);
+}
+
+.standings.has-above {
+  mask-image: linear-gradient(to bottom, transparent, #000 22px);
+}
+
+.standings.has-above.has-more {
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    #000 22px,
+    #000 calc(100% - 22px),
+    transparent
+  );
 }
 
 .stand {
@@ -1937,6 +1976,112 @@ input {
   .aim__card .card,
   .killer {
     animation: none;
+  }
+}
+
+/* ── short screens ───────────────────────────────────────────────────────── */
+
+/* An iPhone SE in Safari gives a page about 553px, and the room screen wants
+   closer to 740. Letting the scoreboard scroll recovers most of that, but not
+   all — so on a short screen everything else gives up a few pixels too. These
+   are proportional trims, not a different layout: the same design, tighter. */
+@media (max-height: 740px) {
+  .screen {
+    padding-top: calc(var(--safe-t) + 6px);
+    padding-bottom: calc(var(--safe-b) + 6px);
+  }
+
+  .topbar--room {
+    margin-bottom: 5px;
+  }
+
+  .roomchip {
+    padding-block: 5px;
+  }
+
+  .stand {
+    padding: 6px 10px 7px;
+  }
+
+  .standings {
+    gap: 4px;
+  }
+
+  .tally__card {
+    padding: 8px 10px 9px;
+  }
+
+  .hand--tally {
+    min-height: 56px;
+    margin: 5px 0 3px;
+  }
+
+  .hand--tally .card {
+    --cw: 40px;
+  }
+
+  .readout {
+    padding-top: 6px;
+  }
+
+  .readout__score {
+    font-size: 1.7rem;
+  }
+
+  .pad {
+    gap: 5px;
+  }
+
+  .pad__key {
+    min-height: 40px;
+    font-size: 0.98rem;
+  }
+
+  /* The account of the round is the first thing that can afford to be shorter:
+     it's history, and the newest line is the one being read. Whole multiples of
+     the line height, so it never shows half a line. */
+  .feed {
+    max-height: 4.05em; /* 3 lines at line-height 1.35 */
+  }
+
+  .dealt {
+    gap: 6px;
+  }
+
+  .btn--xl {
+    padding-block: 12px;
+  }
+}
+
+/* Shorter still: the Bust-O-meter folds to a single line, keeping the number and
+   the recommendation — the two things it's read for — and dropping the gauge. */
+@media (max-height: 620px) {
+  .meter__track {
+    display: none;
+  }
+
+  .advice__row {
+    padding-block: 6px;
+  }
+
+  .hand--tally {
+    min-height: 48px;
+  }
+
+  .hand--tally .card {
+    --cw: 36px;
+  }
+
+  .readout__score {
+    font-size: 1.45rem;
+  }
+
+  .feed {
+    max-height: 2.7em; /* 2 lines */
+  }
+
+  .pad__key {
+    min-height: 36px;
   }
 }
 

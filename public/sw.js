@@ -7,7 +7,7 @@
  * with no signal still opens and can keep score on its own.
  */
 
-const CACHE = 'flip7-v8';
+const CACHE = 'flip7-v9';
 
 const SHELL = [
   '.',
@@ -22,6 +22,7 @@ const SHELL = [
   'js/engine.js',
   'js/ai.js',
   'js/dealer.js',
+  'js/table.js',
   'js/store.js',
   'js/sync-local.js',
   'js/sync-relay.js',

@@ -28,6 +28,7 @@ const MODULES = [
   'engine.js',
   'ai.js',
   'dealer.js',
+  'table.js',
   'storage.js',
   'views.js',
   'sound.js',
