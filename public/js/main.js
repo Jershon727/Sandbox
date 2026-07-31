@@ -74,6 +74,8 @@ async function boot() {
 
   window.__flip7 = { store, scorer, view };
 
+  registerServiceWorker();
+
   view.onlineKind = await Store.onlineKind();
   paintHostSetup();
 
@@ -90,14 +92,29 @@ async function boot() {
   });
 
   await route();
+}
 
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(() => {
-        /* offline support is a bonus, not a requirement */
-      });
+/**
+ * Turn on offline support.
+ *
+ * Deferred to the load event so it doesn't compete with the shell for a phone's
+ * first few hundred milliseconds — but only if that event is still coming. This
+ * used to sit at the end of boot(), after awaiting a network probe and a room
+ * rejoin, by which point `load` had usually already fired; the listener was
+ * attached to an event in the past and the worker silently never registered, so
+ * the app had no offline support at all.
+ */
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  // The single-file build has no sw.js to register — it is already the whole app
+  // in one file, which is as offline as it gets.
+  if (Store.singleFile) return;
+  const register = () =>
+    navigator.serviceWorker.register('sw.js').catch(() => {
+      /* offline support is a bonus, not a requirement */
     });
-  }
+  if (document.readyState === 'complete') register();
+  else window.addEventListener('load', register, { once: true });
 }
 
 /**

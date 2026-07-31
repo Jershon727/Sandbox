@@ -83,6 +83,22 @@ async function phone(label) {
 const state = (page) => page.evaluate(() => window.__flip7.store.state);
 const myTurn = (page) => page.evaluate(() => window.__flip7.store.myTurn);
 
+/**
+ * Who the deal never reached.
+ *
+ * "Everyone is holding a card" is the wrong bar and keeps looking like a bug: a
+ * player dealt Freeze or Flip Three plays it the instant it lands and holds
+ * nothing, while being very much in the round. What must be true is that a card
+ * reached every seat — and every card that lands puts its player in the round's
+ * account, so the account is the honest test.
+ */
+const notDealtTo = (room) => {
+  const named = new Set((room.feed ?? []).flatMap((l) => [l.who, l.to]).filter(Boolean));
+  return Object.entries(room.players ?? {})
+    .filter(([id]) => !named.has(id))
+    .map(([, p]) => p.name);
+};
+
 /** Wait until this phone is asked to do something, or the round ends. */
 async function waitForPrompt(page, ms = 25000) {
   return page
@@ -195,10 +211,8 @@ check('the host deals the first round', opened);
 for (let i = 0; i < 40; i++) {
   const st = await state(jack.page);
   if (!st) break;
-  const dealtAll = Object.values(st.players).every(
-    (p) => p.hand.numbers.length + p.hand.mods.length > 0 || p.hand.chance,
-  );
-  if (dealtAll || st.turnId || st.roundOver) break;
+  // A turn being on offer means the whole opening deal got through.
+  if (st.turnId || st.roundOver) break;
   for (const p of [jack, sam]) {
     const s = await state(p.page);
     const who = await p.page.evaluate(() => window.__flip7.store.myId);
@@ -219,11 +233,9 @@ check(
   JSON.stringify(Object.values(roundOne.players).map((p) => [p.name, p.waiting])),
 );
 check(
-  'and both people were dealt a hand, not just the host',
-  [await jack.page.evaluate(() => window.__flip7.store.myId), samId].every((id) => {
-    const h = roundOne.players[id].hand;
-    return h.numbers.length + h.mods.length > 0 || h.chance || roundOne.players[id].state !== 'active';
-  }),
+  'and the round-one deal reached every player, not just the host',
+  notDealtTo(roundOne).length === 0,
+  notDealtTo(roundOne).join(', '),
 );
 check('now the deck has been dealt from', roundOne.deckLeft > 0 && roundOne.deckLeft < 94);
 check(
@@ -577,14 +589,10 @@ for (let i = 0; i < 40; i++) {
 }
 check('and the fresh deal gets all the way round the table', !!dealtAgain);
 if (dealtAgain) {
-  const named = new Set(dealtAgain.feed.flatMap((l) => [l.who, l.to]).filter(Boolean));
-  const missing = Object.entries(dealtAgain.players)
-    .filter(([id]) => !named.has(id))
-    .map(([, p]) => p.name);
   check(
     'and the account of the new round names every player in it',
-    missing.length === 0,
-    missing.join(', '),
+    notDealtTo(dealtAgain).length === 0,
+    notDealtTo(dealtAgain).join(', '),
   );
 }
 

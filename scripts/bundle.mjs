@@ -92,14 +92,14 @@ let js = parts.join('\n\n');
 // the online backend must not even be attempted.
 js = `globalThis.__FLIP7_SINGLE_FILE = true;\n\n${js}`;
 
-// The service worker lives at a URL that doesn't exist in a single file.
-const swBlock =
-  /if \('serviceWorker' in navigator\) \{[\s\S]*?\n {2}\}\n/;
-if (!swBlock.test(js)) {
-  console.error('Expected the service worker registration block; the source has moved.');
+// The service worker lives at a URL that doesn't exist in a single file, so the
+// app skips registering it when __FLIP7_SINGLE_FILE is set. That used to be done
+// here by cutting the block out with a regex, which broke the moment the code
+// was reshaped — a runtime check the source states outright is harder to lose.
+if (!/Store\.singleFile\) return;/.test(js)) {
+  console.error('The single-file guard on the service worker registration has gone missing.');
   process.exit(1);
 }
-js = js.replace(swBlock, '// (service worker omitted from the single-file build)\n');
 
 const css = await read('css/styles.css');
 const html = await read('index.html');

@@ -405,6 +405,42 @@ modifiers and `×2`, and three each of Freeze, Flip Three and Second Chance.
 Freeze and Flip Three don't need buttons: they change what lands in front of
 you, and you tap what lands.
 
+## Playing with no internet
+
+Card games happen in cabins, on trains and in pub basements, so it's worth being
+precise about what survives losing the network.
+
+**Works with no signal at all**, once the app has been opened once on that phone:
+
+- Opening the app. The service worker caches the shell and answers the reload.
+- **One phone keeping score for the whole table** — host with *Everyone scores
+  on → Just this one*, add everyone from the menu, and tap each hand in as it
+  lands. This is the offline mode, and it's a complete game.
+- The Bust-O-meter, which is arithmetic over the cards on the table rather than
+  anything served.
+- Locking the phone, reloading, or the browser evicting the tab. You come back
+  to the same game.
+
+`dist/flip7.html` (`npm run bundle`) goes further: one file, no requests of any
+kind, openable from a downloads folder or emailed to someone. It's single-phone
+scoring only, by construction.
+
+**Needs a network:** everyone on their own phone, and the dealt game. Both go
+through the relay — the first because the phones have nothing else in common,
+the second because the dealer holds the deck and it can't live on a player's
+device.
+
+**No internet but a local network** is the interesting middle case, and it
+already works with no code and no configuration: run `npm run relay` on a laptop
+on the same wifi, and have everyone browse to that laptop's address
+(`http://192.168.x.x:8787`). The relay serves the app *and* syncs it, and
+`relay-config.js` ships as `'same-origin'`, so phones find it by virtue of having
+loaded the page from it. The wifi never has to reach the internet.
+
+What is *not* currently possible is several phones syncing with no computer and
+no internet — a browser can't listen for connections, and WebRTC needs a
+signalling server to introduce peers in the first place.
+
 ## Notes
 
 - Mobile-first and installable. The service worker means it opens with no

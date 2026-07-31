@@ -10,10 +10,48 @@
  */
 
 import { chromium } from 'playwright';
+import { spawn } from 'node:child_process';
 
-const BASE = process.env.BASE ?? 'http://localhost:5173';
+const PORT = Number(process.env.PORT ?? 5173);
+const BASE = process.env.BASE ?? `http://localhost:${PORT}`;
 const results = [];
 let failed = 0;
+
+/**
+ * Serve the app ourselves unless something already is.
+ *
+ * Relying on a server the caller remembered to start means the suite passes or
+ * fails depending on what happens to be running, which is worse than either.
+ */
+const started = [];
+async function up(url, attempts = 60) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(400) });
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  return false;
+}
+
+if (!(await up(BASE, 1))) {
+  const server = spawn(process.execPath, ['scripts/serve.mjs'], {
+    env: { ...process.env, PORT: String(PORT) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  started.push(server);
+  if (!(await up(BASE))) {
+    console.error(`Could not serve the app on ${BASE}`);
+    process.exit(1);
+  }
+}
+const stopServers = () => {
+  for (const s of started) s.kill();
+  started.length = 0;
+};
+process.on('exit', stopServers);
 
 function check(name, ok, detail = '') {
   results.push(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`);
@@ -328,6 +366,77 @@ await host.evaluate(() => {
 await host.evaluate(() => document.querySelector('#modal-settings').setAttribute('hidden', ''));
 await host.waitForTimeout(150);
 check('it can be switched off', await host.locator('#advice').isHidden());
+
+// ── it opens with no network at all ───────────────────────────────────────
+// The app earns its keep at a kitchen table with bad wifi. This is checked in a
+// fresh context because the service worker has to install from scratch: the
+// registration once sat at the end of an async boot() and was attaching its
+// load listener *after* the load event had already fired, so it silently never
+// ran and there was no offline support at all.
+const solo = await browser.newContext({ viewport: { width: 414, height: 896 } });
+const phone = await solo.newPage();
+guard(phone, 'offline');
+await phone.goto(BASE, { waitUntil: 'load' });
+await phone.waitForFunction(() => !!window.__flip7);
+
+const controlled = await phone
+  .waitForFunction(() => !!navigator.serviceWorker.controller, null, { timeout: 10000 })
+  .then(() => true)
+  .catch(() => false);
+check('the service worker installs and takes control', controlled);
+await phone.waitForTimeout(1200); // let the shell finish precaching
+
+await solo.setOffline(true);
+const reloaded = await phone
+  .reload({ waitUntil: 'domcontentloaded', timeout: 20000 })
+  .then(() => true)
+  .catch((e) => String(e).split('\n')[0]);
+check('and the app still loads with the network gone', reloaded === true, String(reloaded));
+
+const bootedOffline = await phone
+  .waitForFunction(() => !!window.__flip7, null, { timeout: 15000 })
+  .then(() => true)
+  .catch(() => false);
+check('the app boots offline', bootedOffline);
+
+if (bootedOffline) {
+  check(
+    'and knows there are no online rooms to offer',
+    (await phone.evaluate(() => window.__flip7.view.onlineKind)) === null,
+  );
+
+  // One phone keeping score for the whole table is the offline story.
+  await phone.click('[data-goto="host"]');
+  await phone.fill('#host-name', 'Jack');
+  await phone.click('#btn-host');
+  const hostedOffline = await phone
+    .waitForFunction(() => window.__flip7.store.code, null, { timeout: 8000 })
+    .then(() => true)
+    .catch(() => false);
+  check('hosting a room works with no network', hostedOffline);
+
+  await phone.evaluate(() => window.__flip7.store.addPlayer('Sam'));
+  await phone.waitForTimeout(150);
+  for (const n of ['9', '4', '12']) {
+    await phone.evaluate((v) => {
+      [...document.querySelectorAll('#pad .pad__key')].find((k) => k.textContent === v)?.click();
+    }, n);
+    await phone.waitForTimeout(60);
+  }
+  check(
+    'and so does tapping cards in',
+    (await phone.textContent('#round-score')) === '25',
+    await phone.textContent('#round-score'),
+  );
+
+  await phone.reload({ waitUntil: 'domcontentloaded' });
+  const resumed = await phone
+    .waitForFunction(() => window.__flip7.store.state?.players, null, { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
+  check('and the game survives a reload while still offline', resumed);
+}
+await solo.close();
 
 await browser.close();
 
