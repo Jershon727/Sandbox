@@ -3349,6 +3349,21 @@ input {
   border-color: color-mix(in oklab, var(--gold) 50%, transparent);
 }
 
+/* ── the next game's roll call ───────────────────────────────────────────── */
+
+.over__ready {
+  margin: 2px 0 10px;
+  text-align: center;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+#btn-ready.is-ready {
+  background: linear-gradient(150deg, #7ff0b6, var(--mint));
+  color: #06281a;
+}
+
 /* ── the advice's nerve ──────────────────────────────────────────────────── */
 
 /* Careful / Balanced / Wild, tucked inside the "why" expansion: the odds are

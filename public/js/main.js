@@ -262,6 +262,16 @@ function wireChrome() {
     if (store.isDealt && store.isHost) store.intent({ do: 'next-round' });
   });
   $('btn-rematch').addEventListener('click', rematch);
+  // Ready-up for the next game, and dealing back in from the bench, are the
+  // same ask: "count me in from here".
+  $('btn-ready').addEventListener('click', () => {
+    sfx.tap();
+    store.intent({ do: 'ready' });
+  });
+  $('btn-dealin').addEventListener('click', () => {
+    sfx.tap();
+    store.intent({ do: 'ready' });
+  });
   $('btn-share').addEventListener('click', shareRoom);
   $('room-chip').addEventListener('click', shareRoom);
   $('btn-leave').addEventListener('click', leaveRoom);
@@ -758,7 +768,9 @@ async function rematch() {
   view.shownWinner = null;
   view.shownRound = null;
   if (store.isDealt) {
-    await store.intent({ do: 'rematch' });
+    // Online, the next game is opt-in (whoever readied plays). On a shared
+    // phone there's nobody remote to wait for, so everyone is simply in.
+    await store.intent({ do: 'rematch', everyone: !store.isOnline });
   } else {
     await store.update(rematchUpdates(store.state));
   }
@@ -1033,6 +1045,54 @@ function onState(state) {
     view.shownRound = state.lastRound?.round ?? view.shownRound;
     showWinner(state);
   }
+
+  // The roll call for the next game, live while the winner screen is up.
+  if (state.status === 'finished') renderOverReady(state);
+  // A new game started under the winner screen: take it down everywhere, and
+  // let the next finish announce itself even if the same player wins again.
+  if (state.status === 'playing' && view.shownWinner) {
+    view.shownWinner = null;
+    closeModal($('modal-over'));
+  }
+}
+
+/**
+ * "Who's in for another?" — the winner screen doubles as the next game's
+ * roll call in online dealt rooms. Everyone toggles themselves; the host's
+ * start button counts heads (their own tap counts them in, bots are always
+ * game) and only unlocks with a table worth dealing to.
+ */
+function renderOverReady(state) {
+  const ready = $('btn-ready');
+  const line = $('over-ready');
+  if (!store.isDealt || !store.isOnline) {
+    ready.hidden = true;
+    line.hidden = true;
+    return;
+  }
+
+  const me = state.players?.[store.myId];
+  const humans = playerList(state).filter((p) => !p.isBot);
+  const inFor = playerList(state).filter(
+    (p) => p.isBot || p.ready || p.id === state.hostId,
+  ).length;
+
+  ready.hidden = !me;
+  ready.textContent = me?.ready ? "You're in — tap to step out" : "I'm in for another";
+  ready.classList.toggle('is-ready', !!me?.ready);
+  // The host's start is their opt-in, so their toggle would be redundant.
+  if (store.isHost) ready.hidden = true;
+
+  const readyCount = humans.filter((p) => p.ready || p.id === state.hostId).length;
+  line.hidden = false;
+  line.textContent =
+    `${readyCount} of ${humans.length} in for the next game` +
+    (store.isHost ? '' : ` — ${state.players?.[state.hostId]?.name ?? 'the host'} starts it`);
+
+  if (store.isHost) {
+    $('btn-rematch').textContent = `Start the next game (${inFor} in)`;
+    $('btn-rematch').disabled = inFor < 2;
+  }
 }
 
 /**
@@ -1147,6 +1207,9 @@ function renderDealt(state) {
     setHeartbeat(null);
   }
 
+  // On the bench: seated, watching, one tap from being dealt back in.
+  $('btn-dealin').hidden = !(me?.benched && !state.lobby && state.status !== 'finished');
+
   renderPress(state, { me, myTurn, pending, over });
 
   // One attribute drives every "it's on you now" cue in the CSS, so the status
@@ -1164,6 +1227,7 @@ function renderDealt(state) {
     mineToTarget,
     over,
     waiting: !!me?.waiting,
+    benched: !!me?.benched,
   });
   renderStall(state, over);
   renderFeed(state.feed ?? [], state.players ?? {});
@@ -1742,10 +1806,12 @@ function roundScoreOf(player) {
   return base * (doubled ? 2 : 1) + bonus + ((hand.numbers ?? []).length >= 7 ? 15 : 0);
 }
 
-function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
+function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting, benched }) {
   const name = (id) => state.players?.[id]?.name ?? 'someone';
 
   if (state.status === 'finished') return 'Game over.';
+  // Benched: didn't ready up for this game, watching from a kept seat.
+  if (benched && !state.lobby) return "You're sitting this game out — deal in whenever you like.";
   if (state.lobby) {
     if (!store.isHost) return `Waiting for ${name(state.hostId)} to deal.`;
     if (playerList(state).length >= 2) return 'Everyone in? Tap deal and the cards go out.';

@@ -1057,3 +1057,47 @@ test('a railbird ticket survives a snapshot and reaches the projection', () => {
     payout: 10,
   });
 });
+
+// ── ready up: the next game is opt-in ─────────────────────────────────────
+
+test('ready plays, quiet gets benched, and the bench can deal back in', () => {
+  const game = newGame({ seats: { bots: 1 } });
+  addSeat(game, { id: 'dana', name: 'Dana' });
+  game.phase = 'game-over';
+  game.winner = game.byId('me');
+
+  // Toggling: in, then out again.
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(game.byId('dana').ready, true);
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(game.byId('dana').ready, false);
+
+  // Host starts the next game; Dana stayed quiet.
+  assert.equal(applyIntent(game, 'me', { do: 'rematch' }).ok, true);
+  const dana = game.byId('dana');
+  assert.equal(dana.benched, true);
+  assert.equal(dana.status, Status.STAYED, 'benched seats are never dealt to');
+  assert.equal(dana.total, 0, 'new game, fresh slate');
+  assert.equal(game.byId('me').benched, false, "the host's start is their opt-in");
+
+  // From the bench, mid-game: back in from the next round.
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(dana.benched, false);
+  assert.equal(dana.joinedLate, true);
+});
+
+test('a rematch needs a table worth dealing to, and everyone:true skips the roll call', () => {
+  const duo = createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 0 }),
+    target: 200,
+    seed: 7,
+  });
+  addSeat(duo, { id: 'dana', name: 'Dana' });
+  duo.phase = 'game-over';
+  assert.deepEqual(applyIntent(duo, 'me', { do: 'rematch' }), {
+    ok: false,
+    why: 'need-players',
+  });
+  assert.equal(applyIntent(duo, 'me', { do: 'rematch', everyone: true }).ok, true);
+  assert.equal(duo.byId('dana').benched, false, 'a shared phone deals everyone in');
+});

@@ -104,6 +104,8 @@ export function addSeat(game, { id, name }) {
     betUsed: false,
     railbird: null,
     roundBets: 0,
+    ready: false,
+    benched: false,
     joinedLate: game.phase === 'round',
     lastSeen: Date.now(),
   });
@@ -329,6 +331,9 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       railbird: p.railbird
         ? { targetId: p.railbird.targetId, stake: p.railbird.stake, payout: p.railbird.payout }
         : null,
+      // The next game's roll call, and who is watching this one from a chair.
+      ready: !!p.ready,
+      benched: !!p.benched,
     };
   }
 
@@ -443,11 +448,42 @@ export function applyIntent(game, playerId, intent) {
     return { ok: true, newRound: true };
   }
 
+  if (intent?.do === 'ready') {
+    const p = game.byId(playerId);
+    if (!p) return { ok: false, why: 'unknown-player' };
+    // After a game: raise or lower your hand for the next one.
+    if (game.phase === 'game-over') {
+      p.ready = !p.ready;
+      game.emit(p.ready ? 'ready' : 'unready', { playerId });
+      return { ok: true };
+    }
+    // From the bench, mid-game: back in from the next deal.
+    if (p.benched) {
+      p.benched = false;
+      p.joinedLate = true;
+      game.emit('rejoin', { playerId });
+      return { ok: true };
+    }
+    return { ok: false, why: 'not-now' };
+  }
+
   if (intent?.do === 'rematch') {
     if (game.players[0]?.id !== playerId) return { ok: false, why: 'host-only' };
+    // From a finished game the next one is opt-in: whoever readied plays (the
+    // host's tap is their own opt-in, and bots are always game); everyone else
+    // keeps their seat on the bench and can deal back in any time. A shared
+    // phone passes `everyone: true` — there's nobody remote to wait for.
+    if (game.phase === 'game-over' && intent.everyone !== true) {
+      const inFor = game.players.filter((p) => p.isBot || p.ready || p.id === playerId);
+      if (inFor.length < MIN_SEATS) return { ok: false, why: 'need-players' };
+      for (const p of game.players) p.benched = !(p.isBot || p.ready || p.id === playerId);
+    } else {
+      for (const p of game.players) p.benched = false;
+    }
     for (const p of game.players) {
       p.total = 0;
       p.history = [];
+      p.ready = false;
       delete p.joinedLate;
     }
     game.winner = null;
@@ -568,6 +604,12 @@ export function describeEvent(event, game) {
       return `${who(event.targetId)} topped the round — ${name} collects +${event.payout} from the rail.`;
     case 'railbird-lost':
       return `${name}'s ${event.stake} on ${who(event.targetId)} is gone.`;
+    case 'ready':
+      return `${name} is in for the next game.`;
+    case 'unready':
+      return `${name} steps out of the next game.`;
+    case 'rejoin':
+      return `${name} is back in — dealt in from the next round.`;
     case 'tiebreak': {
       // Level at the finish line: without a line for it, the game silently deals
       // another round and looks like it forgot somebody crossed the target.
@@ -643,6 +685,8 @@ export function snapshot(game) {
       betUsed: p.betUsed,
       railbird: p.railbird,
       roundBets: p.roundBets,
+      ready: p.ready,
+      benched: p.benched,
       joinedLate: p.joinedLate,
       lastSeen: p.lastSeen,
     })),
@@ -685,6 +729,8 @@ export function restore(snap) {
       betUsed: !!saved.betUsed,
       railbird: saved.railbird ?? null,
       roundBets: saved.roundBets ?? 0,
+      ready: !!saved.ready,
+      benched: !!saved.benched,
       joinedLate: saved.joinedLate,
       lastSeen: saved.lastSeen,
     });

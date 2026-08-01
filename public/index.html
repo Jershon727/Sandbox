@@ -370,6 +370,8 @@
             </button>
           </div>
           <button class="btn btn--primary btn--xl" id="btn-deal-next" hidden>Deal the next round</button>
+          <!-- On the bench (didn't ready up for this game) — back in any time. -->
+          <button class="btn btn--ghost" id="btn-dealin" hidden>Deal me in from the next round</button>
         </div>
 
         <div class="tally__foot">
@@ -406,7 +408,11 @@
         <h3 class="modal__title" id="over-title">Winner</h3>
         <p class="modal__lede" id="over-sub"></p>
         <div class="scores" id="over-scores"></div>
+        <!-- The next game is opt-in: ready up and you're dealt in; stay quiet
+             and you keep your seat on the bench. No new room needed. -->
+        <p class="over__ready" id="over-ready" hidden></p>
         <div class="modal__actions">
+          <button class="btn btn--primary" id="btn-ready" hidden>I'm in for another</button>
           <button class="btn btn--primary btn--xl" id="btn-rematch">Play again</button>
           <button class="btn btn--ghost" id="btn-leave-over">Leave the room</button>
         </div>

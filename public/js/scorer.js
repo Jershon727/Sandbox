@@ -689,6 +689,8 @@ export class Scorer {
       // Somebody who walked in mid-round isn't out, they're next. Saying so is
       // the difference between "the app skipped them" and "they just missed one".
       if (p.waiting) tags.append(chip('next round', 'waiting'));
+      // Somebody who didn't ready up for this game is watching, not losing.
+      if (p.benched) tags.append(chip('sitting out', 'waiting'));
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
       else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
@@ -712,7 +714,10 @@ export class Scorer {
       // identical, and you can't tell who is still deciding.
       const settled = { stayed: '✓', frozen: '❄', flip7: '★' }[p.state];
       if (shape.busted) round.textContent = 'bust';
-      else if (this.store.isDealt && p.waiting) {
+      else if (this.store.isDealt && p.benched) {
+        round.textContent = 'out';
+        round.classList.add('is-idle');
+      } else if (this.store.isDealt && p.waiting) {
         round.textContent = 'next';
         round.classList.add('is-idle');
       } else if (this.store.isDealt && settled) {
@@ -817,6 +822,7 @@ export class Scorer {
       this.target?.id ?? '',
       this.store.state?.round ?? 0,
       this.target?.waiting ? 'w' : '',
+      this.target?.benched ? 'B' : '',
       hand.busted ? 'b' : '',
       hand.numbers.join(','),
       hand.mods.map((m) => `${m.op}${m.value}`).join(','),
@@ -831,11 +837,13 @@ export class Scorer {
       empty.className = 'hand__empty';
       empty.textContent = shape.busted
         ? 'Busted with nothing'
-        : this.target?.waiting
-          ? 'Dealt in next round'
-          : this.store.isDealt
-            ? 'Waiting for a card'
-            : 'Tap the cards below';
+        : this.target?.benched
+          ? 'Sitting this game out'
+          : this.target?.waiting
+            ? 'Dealt in next round'
+            : this.store.isDealt
+              ? 'Waiting for a card'
+              : 'Tap the cards below';
       host.replaceChildren(empty);
       this.dealSource = null;
       // An empty dealt hand is the baseline the next deal animates from.

@@ -60,6 +60,8 @@ export class Flip7Game {
       betUsed: false, // one press per round
       railbird: null, // out of the round, backing a horse: { targetId, stake, payout }
       roundBets: 0, // net press winnings this round, for the summary
+      ready: false, // opted in to the next game, once this one is over
+      benched: false, // seated but sitting the current game out
     }));
 
     this.round = 0;
@@ -121,7 +123,9 @@ export class Flip7Game {
       p.numbers = [];
       p.modifiers = [];
       p.secondChance = null;
-      p.status = Status.ACTIVE;
+      // A benched seat belongs to somebody who didn't ready up for this game:
+      // they keep their chair and watch, and are never dealt to.
+      p.status = p.benched ? Status.STAYED : Status.ACTIVE;
       p.roundScore = 0;
       p.bustCard = null;
       p.bet = null;
