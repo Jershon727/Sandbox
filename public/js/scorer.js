@@ -505,7 +505,7 @@ export class Scorer {
     }
     // Say which nerve the call was made on, so a Wild "Hit" reads as chosen.
     el.adviceMode.textContent =
-      nerve.key === 'balanced' ? 'Claude recommends' : `Claude recommends · ${nerve.label.toLowerCase()}`;
+      nerve.key === 'balanced' ? 'Confucius says' : `Confucius says · ${nerve.label.toLowerCase()}`;
 
     el.advice.hidden = false;
     el.advice.dataset.band = a.band;
@@ -524,7 +524,7 @@ export class Scorer {
     const whose = target.id === this.store.actingId ? 'You' : target.name;
     el.adviceRow.setAttribute(
       'aria-label',
-      `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
+      `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Confucius says: ${a.headline}. ${a.why}`,
     );
   }
 
