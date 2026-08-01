@@ -51,6 +51,10 @@ export class Store {
     this.mode = null; // 'local' | 'firebase'
     this.state = null;
     this.unwatch = null;
+    this.unwatchStatus = null;
+    // 'online' | 'offline' — whether the backend can currently be reached.
+    // Backends without live status (local, Firebase) always read as online.
+    this.connection = 'online';
     this.beat = 0;
     this.listeners = new Set();
     this.errorListeners = new Set();
@@ -334,6 +338,17 @@ export class Store {
       (error) => this._fail(error),
     );
 
+    // The wire itself, when the backend can report it. Rides the same pipe as
+    // room changes: the UI re-reads store.connection on every emit.
+    this.unwatchStatus?.();
+    this.connection = 'online';
+    this.unwatchStatus =
+      this.sync.watchStatus?.(this.code, (status) => {
+        if (status === this.connection) return;
+        this.connection = status;
+        this._emit();
+      }) ?? null;
+
     clearInterval(this.beat);
     this.beat = setInterval(() => this._touch(), HEARTBEAT);
     this._touch();
@@ -378,8 +393,9 @@ export class Store {
   /** Ask the dealer to do something on behalf of whoever is playing. */
   async intent(intent) {
     // Dealing the next round is the host's call, not the last player's — which
-    // on a shared phone are different people.
-    const hostOnly = intent?.do === 'next-round' || intent?.do === 'rematch';
+    // on a shared phone are different people. Same for moving the game past a
+    // vanished player, or clearing their seat.
+    const hostOnly = ['next-round', 'rematch', 'skip', 'remove-seat'].includes(intent?.do);
     const who = hostOnly ? this.myId : this.actingId;
     if (!this.sync?.intent || !this.code || !who) return;
     try {
@@ -420,8 +436,11 @@ export class Store {
   leave() {
     clearInterval(this.beat);
     this.unwatch?.();
+    this.unwatchStatus?.();
     this.sync?.close?.();
     this.unwatch = null;
+    this.unwatchStatus = null;
+    this.connection = 'online';
     this.sync = null;
     this.state = null;
     this.code = null;

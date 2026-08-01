@@ -28,10 +28,19 @@ export const MAX_SEATS = 8;
 
 /**
  * How recently a seat must have been driven before handing it to a new phone
- * needs a yes. lastSeen here is stamped by the dealer itself — on seating and on
- * every accepted intent — not by client heartbeats, which dealt rooms drop.
+ * needs a yes. lastSeen is stamped by the dealer — on seating and on every
+ * accepted intent — and by the relay from client heartbeats, so it is real
+ * presence: the same number drives the seat-claim confirmation, the away chip
+ * on the standings, and the stalled-turn recovery below.
  */
 export const SEAT_ACTIVE_MS = 120_000;
+
+/**
+ * How long the dealer waits on a silent seat before banking its hand. Long
+ * enough to ride out a tunnel or an app switch; short enough that one dead
+ * phone doesn't hold the whole table hostage.
+ */
+export const STALL_MS = 45_000;
 
 /** Does this seat look like somebody is actually playing it right now? */
 function seatLooksActive(player, now = Date.now()) {
@@ -135,15 +144,96 @@ export function claimSeat(game, { id, name, takeover = false }) {
   return { playerId: seatId, added: true, late: !!game.byId(seatId).joinedLate };
 }
 
-export function removeSeat(game, playerId) {
+/**
+ * Take a seat out of the game. Bots are the dealer's to remove at will; a
+ * person only goes when the host explicitly evicts them — the phone that is
+ * never coming back — and the host can't evict themselves. Their cards go to
+ * the discard so the deck stays whole, and anything the round was waiting on
+ * them for is resolved rather than left hanging on an empty chair.
+ */
+export function removeSeat(game, playerId, { evictHumans = false } = {}) {
   const i = game.players.findIndex((p) => p.id === playerId);
-  if (i < 0 || !game.players[i].isBot) return false;
+  if (i < 0) return false;
+  const player = game.players[i];
+  if (!player.isBot && !evictHumans) return false;
+  if (game.players[0]?.id === playerId) return false; // the host stays
+
+  // Every card they held returns to play via the discard — conservation holds.
+  game.discard.push(...player.numbers, ...player.modifiers);
+  if (player.secondChance) game.discard.push(player.secondChance);
+  if (player.bustCard) game.discard.push(player.bustCard);
+
+  // Nothing may keep waiting on a seat that no longer exists.
+  if (game.pending?.by === playerId) {
+    game.discard.push(game.pending.card);
+    game.pending = null;
+  }
+  if (game.pending) {
+    game.pending.targets = game.pending.targets.filter((id) => id !== playerId);
+    if (!game.pending.targets.length) {
+      game.discard.push(game.pending.card);
+      game.pending = null;
+    }
+  }
+  if (game.flipQueue?.playerId === playerId) game.flipQueue = null;
+  game._dropDeferred((d) => d.player.id === playerId);
+  game.dealQueue = (game.dealQueue ?? []).filter((id) => id !== playerId);
+
+  const wasCurrent = game.turnIndex === i;
   game.players.splice(i, 1);
   game.players.forEach((p, n) => {
     p.seat = n;
   });
-  if (game.turnIndex >= game.players.length) game.turnIndex = 0;
+  const n = game.players.length;
+  if (game.turnIndex > i) game.turnIndex -= 1;
+  // Their turn passes: step back one so the advance lands on whoever was next.
+  else if (wasCurrent) game.turnIndex = (i - 1 + n) % n;
+  if (game.turnIndex >= n) game.turnIndex = 0;
+  if (game.dealerIndex > i) game.dealerIndex -= 1;
+  if (game.dealerIndex >= n) game.dealerIndex = Math.max(0, n - 1);
+  if (wasCurrent && game.phase === 'round') game.needAdvance = true;
   return true;
+}
+
+// ── moving past a vanished player ─────────────────────────────────────────
+
+/**
+ * The seat the whole game is stuck behind, if there is one: a person the
+ * dealer is waiting on whose phone has said nothing — no heartbeat, no tap —
+ * for STALL_MS. A seat with no record at all gets the benefit of the doubt,
+ * exactly like seatLooksActive: the bad failure here is banking a hand
+ * somebody was about to play.
+ */
+export function stalledTurn(game, now = Date.now()) {
+  const request = game.request();
+  if (request.type !== 'move' && request.type !== 'target') return null;
+  const player = game.byId(request.playerId);
+  if (!player || player.isBot) return null;
+  if (player.lastSeen === undefined || now - player.lastSeen < STALL_MS) return null;
+  return player.id;
+}
+
+/**
+ * Move the game past a person who has vanished: bank their hand as a stay, or
+ * land the action card they were aiming on themselves where the rules allow
+ * it (a gift can't be, so it goes to the first legal target). Shared by the
+ * relay's stall timer and the host's skip control, so the two can't drift.
+ */
+export function settleSeat(game, playerId) {
+  const request = game.request();
+  if (request.playerId !== playerId) return null;
+  if (request.type === 'move') {
+    game.stay();
+    // The 'stay' event would read as their choice; the caller writes the truth.
+    game.drain();
+    return { did: 'stay', playerId, score: game.byId(playerId).roundScore };
+  }
+  if (request.type === 'target') {
+    const targetId = request.targets.includes(playerId) ? playerId : request.targets[0];
+    game.resolveTarget(targetId);
+    return { did: 'target', playerId, targetId, events: game.drain() };
+  }
+  return null;
 }
 
 // ── what the table can see ────────────────────────────────────────────────
@@ -206,6 +296,7 @@ export function deckTally(game) {
 export function project(game, { code, lastRound = null, feed = [] } = {}) {
   const request = game.request();
   const players = {};
+  const now = Date.now();
 
   for (const p of game.players) {
     players[p.id] = {
@@ -220,10 +311,12 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       // Sitting out the round they walked in on. Without this the table shows
       // them as having stayed, which reads as the dealer having skipped them.
       waiting: !!p.joinedLate,
-      // Real socket presence is the relay's to report, and it doesn't yet — so
-      // every seat is projected as present rather than flickering "away" for
-      // anyone between turns. Seat-claiming reads p.lastSeen directly instead.
-      lastSeen: Date.now(),
+      // Presence is real: the dealer stamps lastSeen on seating and on every
+      // intent, and the relay stamps it from client heartbeats — so the away
+      // chip works in dealt rooms. Bots are always present, and a seat with no
+      // record yet reads as present rather than flickering away before its
+      // first beat.
+      lastSeen: p.isBot ? now : (p.lastSeen ?? now),
     };
   }
 
@@ -286,6 +379,29 @@ export function applyIntent(game, playerId, intent) {
     if (!request.targets.includes(intent.targetId)) return { ok: false, why: 'bad-target' };
     game.resolveTarget(intent.targetId);
     return { ok: true };
+  }
+
+  if (intent?.do === 'skip') {
+    // The host moving the game past a vanished player right now, rather than
+    // waiting out the stall timer. Bots never need it — they move themselves.
+    if (game.players[0]?.id !== playerId) return { ok: false, why: 'host-only' };
+    const target = game.byId(intent.targetId);
+    if (!target || target.isBot) return { ok: false, why: 'bad-target' };
+    const settled = settleSeat(game, intent.targetId);
+    if (!settled) return { ok: false, why: 'not-now' };
+    return { ok: true, skipped: intent.targetId, settled };
+  }
+
+  if (intent?.do === 'remove-seat') {
+    // Clearing the chair of somebody who is never coming back. Host only, and
+    // never the host's own seat — a table needs its host.
+    if (game.players[0]?.id !== playerId) return { ok: false, why: 'host-only' };
+    const target = game.byId(intent.targetId);
+    if (!target || target.id === playerId) return { ok: false, why: 'bad-target' };
+    if (!removeSeat(game, intent.targetId, { evictHumans: true })) {
+      return { ok: false, why: 'bad-target' };
+    }
+    return { ok: true, removed: intent.targetId, removedName: target.name };
   }
 
   if (intent?.do === 'next-round') {

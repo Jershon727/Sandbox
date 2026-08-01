@@ -18,7 +18,10 @@ import {
   standings,
   playerList,
   isAway,
+  hostAwayFor,
   roundLooksDone,
+  AWAY_AFTER,
+  HOST_AWAY_TAKEOVER,
 } from './room.js';
 import { advise } from './odds.js';
 import { toast, showBanner, buzz, reducedMotion } from './views.js';
@@ -115,6 +118,13 @@ export class Scorer {
     // on the same row — confirms; tapping somebody else re-arms onto them.
     const pending = this.store.state?.pending;
     if (this.store.isDealt) {
+      // With the wire down the dealer can't hear the aim — refuse rather than
+      // arming a freeze that fires whenever the socket happens to come back.
+      if (this.store.connection === 'offline') {
+        sfx.error();
+        toast('Reconnecting — hang on');
+        return;
+      }
       if (pending?.byId === this.store.actingId) {
         if (!pending.targets.includes(playerId)) {
           sfx.error();
@@ -400,13 +410,24 @@ export class Scorer {
     this.renderPadState(hand);
     this.renderAdvice(t);
 
-    // Only the host ends the round, so the whole table banks on the same beat.
-    // In a dealt game the dealer decides, so neither control applies.
+    // Only the host ends the round, so the whole table banks on the same beat —
+    // unless the host's phone has been gone so long that waiting on them is
+    // worse than letting somebody else press their button. In a dealt game the
+    // dealer decides, so neither control applies.
     const host = this.store.isHost;
     if (!dealt) {
-      this.el.end.hidden = !host;
-      this.el.waiting.hidden = host;
-      if (host) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
+      const away = this.store.isOnline && !host ? hostAwayFor(state) : 0;
+      const orphaned = away >= HOST_AWAY_TAKEOVER;
+      this.el.end.hidden = !host && !orphaned;
+      this.el.waiting.hidden = host || orphaned;
+      if (!this.el.waiting.hidden) {
+        const hostName = state.players?.[state.hostId]?.name ?? 'the host';
+        this.el.waiting.textContent =
+          away > AWAY_AFTER
+            ? `${hostName} looks offline — anyone can end the round in a minute`
+            : `Waiting for ${hostName} to end the round`;
+      }
+      if (!this.el.end.hidden) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
     }
 
     this.announceFlip7();

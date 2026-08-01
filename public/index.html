@@ -239,6 +239,9 @@
             <span class="roomchip__meta" id="room-meta">round 1</span>
           </button>
           <button class="icon-btn" data-open="rules" aria-label="How to play">?</button>
+          <!-- The wire, when it matters: "Reconnecting…" while the socket is
+               down, a brief "Back online" when it returns. -->
+          <span class="connpill" id="conn-pill" hidden role="status">Reconnecting…</span>
         </header>
 
         <div class="standings" id="standings" aria-label="Scores"></div>
@@ -325,6 +328,16 @@
           </div>
 
           <p class="dealt__status" id="dealt-status">Dealing…</p>
+
+          <!-- The table is stuck behind a phone that went quiet. The dealer
+               banks that hand by itself after 45 seconds; the host can do it
+               now, or clear the seat of somebody who's never coming back. -->
+          <div class="stallrow" id="stall" hidden>
+            <span class="stallrow__note" id="stall-note"></span>
+            <button class="btn btn--ghost btn--sm" id="btn-stall-skip">Bank their hand</button>
+            <button class="btn btn--danger btn--sm" id="btn-stall-remove">Remove them</button>
+          </div>
+
           <div class="dealt__actions" id="dealt-actions">
             <button class="btn btn--stay" id="btn-dstay">
               <span class="btn__label">Stay</span>

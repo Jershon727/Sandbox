@@ -935,6 +935,68 @@ input {
   color: var(--ink-3);
 }
 
+/* The wire, when it matters: a small pill hanging under the room chip. It only
+   exists while the connection is down or has just come back — the steady state
+   gets no chrome. */
+.topbar--room {
+  position: relative;
+}
+
+.connpill {
+  position: absolute;
+  top: calc(100% - 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  white-space: nowrap;
+  padding: 3px 12px;
+  border-radius: 999px;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  background: var(--surface-solid);
+  border: 1px solid var(--line-2);
+  color: var(--ink-2);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
+}
+
+.connpill[data-tone='off'] {
+  color: var(--hot);
+  border-color: color-mix(in oklab, var(--hot) 45%, transparent);
+}
+
+.connpill[data-tone='on'] {
+  color: var(--mint);
+  border-color: color-mix(in oklab, var(--mint) 45%, transparent);
+}
+
+/* The brand hot/mint sit on a white pill in light theme — darken for contrast. */
+[data-theme='light'] .connpill[data-tone='off'] {
+  color: #c02339;
+}
+
+[data-theme='light'] .connpill[data-tone='on'] {
+  color: #0e7a4e;
+}
+
+/* The host's way past a dead phone: bank the hand now, or clear the seat. */
+.stallrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stallrow__note {
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
 /* the live scoreboard — the reason everyone has the app open */
 
 /* It is also the only part of the screen with no natural size: eight players

@@ -17,11 +17,12 @@ import { extname, join, normalize } from 'node:path';
 import { WebSocketServer } from 'ws';
 
 import { applyPaths, normalizeCode, CODE_LENGTH } from '../public/js/room.js';
-import { claimSeat, snapshot as snapshotGame, restore } from '../public/js/dealer.js';
+import { claimSeat, snapshot as snapshotGame, restore, STALL_MS } from '../public/js/dealer.js';
 import {
   createTable,
   tableFrom,
   noteFeed,
+  recoverStalledTurn,
   reproject as reprojectTable,
   request as requestOf,
   step as stepTable,
@@ -124,7 +125,45 @@ function runDealer(code) {
   if (result.delay !== null) {
     entry.timer = setTimeout(() => runDealer(code), result.delay);
     entry.timer.unref?.();
+  } else {
+    // Waiting on a person — who may have vanished. Watch for the stall.
+    watchStall(code);
   }
+}
+
+/**
+ * The dealer is waiting on a person. If that person's phone stays silent for
+ * STALL_MS — no heartbeat, no tap — bank their hand rather than holding the
+ * whole table hostage. The check re-reads lastSeen when it fires, so a phone
+ * that comes back first simply resets the clock; and it shares entry.timer
+ * with the dealer loop, so any arriving intent cancels it naturally.
+ */
+function watchStall(code) {
+  const entry = rooms.get(code);
+  if (!entry?.table) return;
+  const game = entry.table.game;
+  const req = game.request();
+  if (req.type !== 'move' && req.type !== 'target') return;
+  const player = game.byId(req.playerId);
+  if (!player || player.isBot) return;
+
+  const seen = player.lastSeen ?? Date.now();
+  const wait = Math.max(1000, STALL_MS - (Date.now() - seen));
+  clearTimeout(entry.timer);
+  entry.timer = setTimeout(() => {
+    const again = rooms.get(code);
+    if (!again?.table) return;
+    if (recoverStalledTurn(again.table)) {
+      again.room = again.table.room;
+      touch(again);
+      broadcast(again);
+      log(`stall ${code}: banked ${player.name}'s hand`);
+      runDealer(code); // the game moves on — bots, deals, closing the round
+    } else {
+      watchStall(code); // still their turn, but their phone is back
+    }
+  }, wait);
+  entry.timer.unref?.();
 }
 
 // ── keeping rooms across a restart ────────────────────────────────────────
@@ -390,10 +429,30 @@ wss.on('connection', (socket, request) => {
 
     if (msg.t === 'update') {
       if (!entry) return fail(socket, 'room-missing', 'That game has ended.');
-      // The dealer is the only writer in a dealt game. Heartbeats and stray
-      // writes are simply dropped rather than treated as an error, so a client
-      // switching modes doesn't spew failures.
-      if (entry.table) return;
+      // The dealer is the only writer in a dealt game — but a heartbeat isn't a
+      // write, it's presence, which is exactly what the dealer can't see on its
+      // own. Stamp the seat (with our clock, not the phone's) and drop every
+      // other path on the floor, so a client switching modes doesn't spew
+      // failures. The stall timer re-reads these stamps when it fires.
+      if (entry.table) {
+        if (!entry.sockets.has(socket)) return;
+        if (!msg.paths || typeof msg.paths !== 'object') return;
+        let beat = false;
+        for (const path of Object.keys(msg.paths)) {
+          const m = /^players\/([^/]+)\/lastSeen$/.exec(path);
+          const player = m ? entry.table.game.byId(m[1]) : null;
+          if (player && !player.isBot) {
+            player.lastSeen = Date.now();
+            beat = true;
+          }
+        }
+        if (!beat) return;
+        // Reproject and tell everyone, so away chips track real presence even
+        // through the quiet stretches when no cards are moving.
+        reproject(entry);
+        broadcast(entry);
+        return;
+      }
       if (!entry.sockets.has(socket)) {
         return fail(socket, 'not-joined', 'Join the room before writing to it.');
       }

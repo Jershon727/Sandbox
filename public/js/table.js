@@ -20,6 +20,8 @@ import {
   publicCard,
   roundResults,
   seatsFor,
+  settleSeat,
+  stalledTurn,
 } from './dealer.js';
 
 /** How much of the round's account to keep. Enough to scroll back a turn or two. */
@@ -142,8 +144,71 @@ export function request(table, playerId, intent) {
     table.lastRound = null;
     table.feed = [];
   }
+  // A skipped or removed seat deserves a line: without one, a player who comes
+  // back sees their hand banked — or their chair gone — with no explanation.
+  if (result.ok && result.skipped) {
+    const name = table.game.byId(result.skipped)?.name ?? 'They';
+    if (result.settled.did === 'stay') {
+      noteFeed(table, {
+        text: `${name} was skipped — banked ${result.settled.score}.`,
+        type: 'stall',
+        who: result.skipped,
+        to: result.skipped,
+        score: result.settled.score,
+      });
+    } else {
+      noteFeed(table, {
+        text: `${name} was skipped — the dealer aimed their card.`,
+        type: 'stall',
+        who: result.skipped,
+        to: result.skipped,
+      });
+      recordEvents(table, result.settled.events);
+    }
+  }
+  if (result.ok && result.removed) {
+    noteFeed(table, {
+      text: `${result.removedName} was removed from the table.`,
+      type: 'leave',
+      who: result.removed,
+      to: result.removed,
+    });
+  }
   if (result.ok) reproject(table);
   return result;
+}
+
+/**
+ * The stall timer's payoff: the whole table is stuck behind a seat whose phone
+ * has gone silent, so bank that hand and say why. Runs wherever the dealer
+ * runs — the relay's timer calls it on a schedule; a test calls it with a
+ * clock of its own. Returns whether anything was recovered.
+ */
+export function recoverStalledTurn(table, now = Date.now()) {
+  const playerId = stalledTurn(table.game, now);
+  if (!playerId) return false;
+  const player = table.game.byId(playerId);
+  const settled = settleSeat(table.game, playerId);
+  if (!settled) return false;
+  if (settled.did === 'stay') {
+    noteFeed(table, {
+      text: `${player.name} lost connection — banked ${settled.score}.`,
+      type: 'stall',
+      who: playerId,
+      to: playerId,
+      score: settled.score,
+    });
+  } else {
+    noteFeed(table, {
+      text: `${player.name} lost connection — the dealer aimed their card.`,
+      type: 'stall',
+      who: playerId,
+      to: playerId,
+    });
+    recordEvents(table, settled.events);
+  }
+  reproject(table);
+  return true;
 }
 
 /**

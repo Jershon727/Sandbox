@@ -122,6 +122,21 @@ export function isAway(player, now = Date.now()) {
   return now - (player.lastSeen ?? 0) > AWAY_AFTER;
 }
 
+/** How long the host must be silent before anyone may end the round for them. */
+export const HOST_AWAY_TAKEOVER = 120_000;
+
+/**
+ * How long the host's phone has been quiet. Scorekeeping only: the host is the
+ * one person who can end a round, so a host in a dead spot would otherwise
+ * strand the whole table mid-round. Past HOST_AWAY_TAKEOVER, anybody may press
+ * their button for them.
+ */
+export function hostAwayFor(room, now = Date.now()) {
+  const host = room?.players?.[room?.hostId];
+  if (!host) return 0;
+  return Math.max(0, now - (host.lastSeen ?? 0));
+}
+
 /** Has anyone touched a card this round? */
 export function roundStarted(room) {
   return playerList(room).some((p) => {

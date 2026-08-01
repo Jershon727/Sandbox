@@ -17,6 +17,8 @@ import {
   playerList,
   standings,
   isAway,
+  hostAwayFor,
+  HOST_AWAY_TAKEOVER,
   roundStarted,
   roundLooksDone,
   nextOrder,
@@ -156,6 +158,18 @@ test('a quiet phone reads as away', () => {
   assert.equal(isAway({ lastSeen: now - 1000 }, now), false);
   assert.equal(isAway({ lastSeen: now - 60_000 }, now), true);
   assert.equal(isAway({}, now), true, 'never seen counts as away');
+});
+
+test('a vanished host eventually forfeits the end-round button', () => {
+  const now = 1_000_000_000;
+  const room = blankRoom({ code: 'ABCD', hostId: 'h', hostName: 'Jack', now });
+  assert.equal(hostAwayFor(room, now), 0, 'a fresh room has a present host');
+  assert.ok(
+    hostAwayFor(room, now + HOST_AWAY_TAKEOVER - 1) < HOST_AWAY_TAKEOVER,
+    'not handed over a moment early',
+  );
+  assert.ok(hostAwayFor(room, now + HOST_AWAY_TAKEOVER) >= HOST_AWAY_TAKEOVER);
+  assert.equal(hostAwayFor({ players: {} }, now), 0, 'no host, no takeover clock');
 });
 
 test('seats are assigned after the highest one taken', () => {

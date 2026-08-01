@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createTable, request, REACTIONS } from '../public/js/table.js';
+import { createTable, recoverStalledTurn, request, step, REACTIONS } from '../public/js/table.js';
+import { STALL_MS } from '../public/js/dealer.js';
 
 const newTable = () =>
   createTable({
@@ -56,4 +57,26 @@ test('reactions survive the round but a new deal clears them with the feed', () 
   assert.equal(table.feed.length, 1);
   assert.equal(request(table, 'me', { do: 'next-round' }).ok, true);
   assert.equal(table.feed.length, 0);
+});
+
+test('a turn stuck behind a dead phone is banked with an honest account', () => {
+  // Seeded, so the deal is the same one the dealer tests settle on: the host
+  // is the person the dealer ends up waiting for.
+  const table = createTable({
+    code: 'ABCD',
+    setup: { hostId: 'me', hostName: 'Jack', target: 200, bots: 1, seed: 7 },
+    deal: false,
+  });
+  assert.equal(request(table, 'me', { do: 'next-round' }).ok, true);
+  for (let i = 0; i < 400 && step(table).delay !== null; i++);
+
+  // Still present (the host seat has no record, which counts as present).
+  assert.equal(recoverStalledTurn(table), false, 'a live phone is left alone');
+
+  table.game.byId('me').lastSeen = Date.now() - STALL_MS - 1;
+  assert.equal(recoverStalledTurn(table), true);
+  const line = table.feed.find((l) => l.type === 'stall');
+  assert.match(line.text, /Jack lost connection — banked \d+/);
+  assert.equal(line.to, 'me', 'aimed at the player it happened to');
+  assert.equal(table.room.players.me.state, 'stayed', 'banked, and the projection says so');
 });

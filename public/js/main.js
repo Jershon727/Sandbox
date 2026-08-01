@@ -18,6 +18,9 @@ import {
   standings,
   tiedLeaders,
   makeId,
+  isAway,
+  hostAwayFor,
+  HOST_AWAY_TAKEOVER,
 } from './room.js';
 import { REACTIONS } from './table.js';
 import { bustChance, riskBand } from './odds.js';
@@ -68,6 +71,8 @@ const view = {
   lastReactAt: 0, // reactions are rate-limited to one a second
   seenReactions: null, // scorekeeping reaction ids already floated
   lastDeckLeft: null, // for nudging the deck when a card comes off it
+  lastConn: null, // the connection pill's last painted state
+  connTimer: 0, // hides the brief "Back online" pill
 };
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -233,6 +238,17 @@ function wireChrome() {
     store.intent({ do: 'stay' });
   });
   $('btn-deal-next').addEventListener('click', () => store.intent({ do: 'next-round' }));
+
+  // The host's way past a phone that went quiet mid-turn: bank the hand now
+  // rather than waiting out the dealer's timer, or clear the seat for good.
+  $('btn-stall-skip').addEventListener('click', () => {
+    const id = $('stall').dataset.target;
+    if (id) store.intent({ do: 'skip', targetId: id });
+  });
+  $('btn-stall-remove').addEventListener('click', () => {
+    const id = $('stall').dataset.target;
+    if (id) store.intent({ do: 'remove-seat', targetId: id });
+  });
 
   // In a dealt game, dismissing the summary is also the host asking for the next
   // deal. In scorekeeping mode the round has already turned over, so it just closes.
@@ -634,6 +650,9 @@ function leaveRoom() {
   view.seenReactions = null;
   view.lastDeckLeft = null;
   view.spectateSeen = null;
+  view.lastConn = null;
+  clearTimeout(view.connTimer);
+  $('conn-pill').hidden = true;
   closeAllModals();
   $('home-resume').hidden = true;
   go('home');
@@ -674,7 +693,11 @@ async function shareRoom() {
 
 async function endRound() {
   const state = store.state;
-  if (!state || !store.isHost) return;
+  if (!state) return;
+  // The host's button — unless the host has vanished for long enough that the
+  // table would otherwise be stranded mid-round, in which case it's anyone's.
+  const orphaned = store.isOnline && hostAwayFor(state) >= HOST_AWAY_TAKEOVER;
+  if (!store.isHost && !orphaned) return;
 
   if (!roundStarted(state)) {
     sfx.error();
@@ -777,6 +800,7 @@ function onState(state) {
   $('room-meta').textContent = state.lobby
     ? `taking seats · to ${state.target}`
     : `round ${state.round} · to ${state.target}`;
+  renderConnection();
   scorer.render();
 
   // Reactions make sense once there's a table to react to.
@@ -819,6 +843,39 @@ function onState(state) {
 }
 
 /**
+ * The pill under the room code that says whether the relay can hear us. It
+ * shows nothing while everything is fine — the steady state deserves no chrome
+ * — turns "Reconnecting…" the moment the socket drops, and flashes a brief
+ * "Back online" when it returns, so a quiet table reads as quiet rather than
+ * broken.
+ */
+function renderConnection() {
+  const conn = store.isOnline ? store.connection : 'online';
+  if (conn === view.lastConn) return;
+  const wasOffline = view.lastConn === 'offline';
+  view.lastConn = conn;
+
+  const pill = $('conn-pill');
+  clearTimeout(view.connTimer);
+  if (conn === 'offline') {
+    pill.hidden = false;
+    pill.dataset.tone = 'off';
+    pill.textContent = 'Reconnecting…';
+    announce('Connection lost — reconnecting.');
+  } else if (wasOffline) {
+    pill.hidden = false;
+    pill.dataset.tone = 'on';
+    pill.textContent = 'Back online';
+    announce('Back online.');
+    view.connTimer = setTimeout(() => {
+      pill.hidden = true;
+    }, 2000);
+  } else {
+    pill.hidden = true;
+  }
+}
+
+/**
  * The dealt-game controls. The keypad is for tapping cards you were physically
  * dealt; when the app is dealing, the only decisions are hit and stay.
  */
@@ -831,9 +888,12 @@ function renderDealt(state) {
   $('dealt').hidden = !dealt;
   for (const id of ['btn-undo', 'btn-clear']) $(id).hidden = dealt;
   if (dealt) $('btn-end-round').hidden = true;
-  $('waiting').hidden = dealt || store.isHost;
+  // In scorekeeping mode the scorer decides who sees the waiting line — it
+  // knows about the vanished-host takeover; here it only needs hiding for dealt.
+  if (dealt) $('waiting').hidden = true;
   if (!dealt) {
     setHeartbeat(null);
+    $('stall').hidden = true;
     return;
   }
 
@@ -853,10 +913,15 @@ function renderDealt(state) {
   // way down toward where the buttons weren't must not hit one.
   if (showActions && actions.hidden) armActions(actions);
   actions.hidden = !showActions;
+  // While the wire is down the dealer can't hear us: gameplay taps go inert
+  // rather than silently queueing a hit somebody no longer means.
+  const offline = store.isOnline && store.connection === 'offline';
+  $('btn-dhit').disabled = offline;
+  $('btn-dstay').disabled = offline;
   $('btn-deal-next').hidden = !canDeal;
   if (canDeal) {
     // Dealing to a table of one would deal the host a hand and end the round.
-    $('btn-deal-next').disabled = state.lobby && seats < 2;
+    $('btn-deal-next').disabled = (state.lobby && seats < 2) || offline;
     $('btn-deal-next').textContent = state.lobby
       ? `Deal the first round (${seats} in)`
       : 'Deal the next round';
@@ -905,6 +970,7 @@ function renderDealt(state) {
     over,
     waiting: !!me?.waiting,
   });
+  renderStall(state, over);
   renderFeed(state.feed ?? [], state.players ?? {});
   announceTurn(state, { myTurn, mineToAim: mineToTarget, pending });
   announceSittingOut(state, me);
@@ -1088,6 +1154,34 @@ function riffleDeck() {
   deck.classList.remove('is-riffle');
   void deck.offsetWidth;
   deck.classList.add('is-riffle');
+}
+
+/**
+ * The host's controls for a stuck turn. Shown only while the dealer is waiting
+ * on a person whose phone has gone quiet — the dealer will bank that hand by
+ * itself after its timer, but the host shouldn't have to explain that to a
+ * table of people staring at "Dana is playing…".
+ */
+function renderStall(state, over) {
+  const row = $('stall');
+  const waitedOnId = state.pending?.byId ?? state.turnId ?? null;
+  const waitedOn = waitedOnId ? state.players?.[waitedOnId] : null;
+  const show =
+    store.isHost &&
+    store.isOnline &&
+    !over &&
+    !state.lobby &&
+    !!waitedOn &&
+    !waitedOn.isBot &&
+    waitedOnId !== store.myId &&
+    isAway(waitedOn);
+  row.hidden = !show;
+  if (!show) return;
+  $('stall-note').textContent = `${waitedOn.name} lost connection`;
+  $('btn-stall-skip').textContent = state.pending
+    ? 'Play their card'
+    : `Bank their ${roundScoreOf(waitedOn)}`;
+  row.dataset.target = waitedOnId;
 }
 
 /** Hit and Stay: on screen at once, tappable a beat later. */
@@ -1275,6 +1369,17 @@ function announceWhatHappenedToMe(state) {
         sub: "you're safe — sit tight until the round ends",
         ms: 1300,
       });
+    } else if (line.type === 'stall' && self) {
+      // You come back from a tunnel to find your hand banked. Say who did it —
+      // the dealer, not a person — and that nothing was lost.
+      showBanner('While you were away', {
+        tone: 'freeze',
+        sub:
+          line.score === undefined
+            ? 'the dealer played your card for you'
+            : `the dealer banked ${line.score} for you`,
+        ms: 1800,
+      });
     } else if (line.type === 'second-chance' && self) {
       // The shield-break beat: the duplicate hits the shield, the shield
       // shatters, and the save is quantified — the number it just kept alive.
@@ -1373,9 +1478,15 @@ function dealtStatus(state, { myTurn, pending, mineToTarget, over, waiting }) {
   if (myTurn) return 'Your turn — hit or stay';
 
   // Out of the round but it hasn't ended: say why you can't do anything, rather
-  // than only naming whoever is playing.
+  // than only naming whoever is playing. A player whose phone has gone quiet is
+  // named as offline, not "playing" — the dealer will move past them shortly.
   const mine = state.players?.[store.actingId];
-  const playing = state.turnId ? `${name(state.turnId)} is playing…` : 'Dealing…';
+  const up = state.turnId ? state.players?.[state.turnId] : null;
+  const playing = state.turnId
+    ? up && !up.isBot && state.turnId !== store.actingId && store.isOnline && isAway(up)
+      ? `${name(state.turnId)} lost connection — hang on…`
+      : `${name(state.turnId)} is playing…`
+    : 'Dealing…';
   if (mine && !mine.waiting) {
     if (mine.hand?.busted) return `You busted — ${playing}`;
     if (mine.state === 'frozen') return `Frozen out this round — ${playing}`;
