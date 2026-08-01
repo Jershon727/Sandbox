@@ -151,7 +151,7 @@ export function decideTarget(game, player, request, rng) {
  */
 export function decideBet(game, player, rng) {
   if (styleOf(player).key !== 'reckless') return 0;
-  if (player.betUsed || player.bet || player.secondChance) return 0;
+  if (player.bet || player.secondChance) return 0;
   if ((player.total ?? 0) < 10) return 0;
   const leader = Math.max(...game.players.map((q) => q.total));
   if (player.total >= leader) return 0;

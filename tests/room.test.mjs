@@ -401,7 +401,7 @@ test('the railbird window opens only for the dead, funded, and unbet', () => {
   assert.equal(canRailbird(dealtRoom({ state: 'frozen' }), 'me'), true, 'frozen counts as out');
   assert.equal(canRailbird(dealtRoom({ state: 'active' }), 'me'), false, 'still playing');
   assert.equal(canRailbird(dealtRoom({ state: 'stayed' }), 'me'), false, 'banked is not out');
-  assert.equal(canRailbird(dealtRoom({ total: 4 }), 'me'), false, 'broke');
+  assert.equal(canRailbird(dealtRoom({ total: 0 }), 'me'), true, 'broke still bets — totals can go negative');
   assert.equal(canRailbird(dealtRoom({ railbird: { targetId: 'horse' } }), 'me'), false, 'bet down');
   assert.equal(canRailbird({ ...dealtRoom({}), pressBets: false }, 'me'), false, 'rule off');
   assert.equal(canRailbird({ ...dealtRoom({}), roundOver: true }, 'me'), false, 'round closed');

@@ -130,7 +130,6 @@ export function canRailbird(room, playerId) {
   const me = room.players?.[playerId];
   if (!me || me.waiting || me.railbird) return false;
   if (me.state !== 'busted' && me.state !== 'frozen') return false;
-  if ((me.total ?? 0) < 5) return false;
   return playerList(room).some((p) => p.id !== playerId && !p.waiting && p.state === 'active');
 }
 

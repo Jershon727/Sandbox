@@ -190,14 +190,17 @@ export function fillScores(host, rows, target, { countUp = false, stagger = fals
       bar.className = 'bar';
       const fill = document.createElement('span');
       fill.className = 'bar__fill';
-      if (countUp && !still) fill.style.width = `${Math.min(100, (from / target) * 100)}%`;
+      if (countUp && !still) {
+        fill.style.width = `${Math.min(100, Math.max(0, (from / target) * 100))}%`;
+      }
       // Bars landing top-down give the final table a podium beat.
       if (stagger && !still) fill.style.transitionDelay = `${i * 130}ms`;
       bar.append(fill);
       el.append(bar);
       // Let the row paint before the bar animates, so the fill is visible.
+      // Clamped both ways: press-bet debts can drag a total below zero.
       requestAnimationFrame(() => {
-        fill.style.width = `${Math.min(100, (row.total / target) * 100)}%`;
+        fill.style.width = `${Math.min(100, Math.max(0, (row.total / target) * 100))}%`;
       });
     }
 

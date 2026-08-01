@@ -101,7 +101,6 @@ export function addSeat(game, { id, name }) {
     roundScore: 0,
     bustCard: null,
     bet: null,
-    betUsed: false,
     railbird: null,
     roundBets: 0,
     ready: false,
@@ -323,10 +322,9 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       // record yet reads as present rather than flickering away before its
       // first beat.
       lastSeen: p.isBot ? now : (p.lastSeen ?? now),
-      // The Press bet house rule: a live bet is public (the whole table should
-      // sweat it), and betUsed lets the UI stop offering a second press.
+      // The Press bet house rule: a live bet is public — the whole table
+      // should sweat it. A bet rides one card; every hit can carry a new one.
       bet: p.bet ? { wager: p.bet.wager, payout: p.bet.payout } : null,
-      betUsed: !!p.betUsed,
       // A railbird's pick is public too — the horse should feel the backing.
       railbird: p.railbird
         ? { targetId: p.railbird.targetId, stake: p.railbird.stake, payout: p.railbird.payout }
@@ -682,7 +680,6 @@ export function snapshot(game) {
       roundScore: p.roundScore,
       bustCard: p.bustCard,
       bet: p.bet,
-      betUsed: p.betUsed,
       railbird: p.railbird,
       roundBets: p.roundBets,
       ready: p.ready,
@@ -726,7 +723,6 @@ export function restore(snap) {
       roundScore: saved.roundScore,
       bustCard: saved.bustCard,
       bet: saved.bet ?? null,
-      betUsed: !!saved.betUsed,
       railbird: saved.railbird ?? null,
       roundBets: saved.roundBets ?? 0,
       ready: !!saved.ready,

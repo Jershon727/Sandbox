@@ -479,6 +479,15 @@ input {
   border-radius: 11px;
 }
 
+/* .btn clips its own overflow, so a hit-area halo can't reach past the edge —
+   on touch screens the small buttons simply grow to the 44px floor instead.
+   Cursor screens keep the tighter 38px look. */
+@media (pointer: coarse) {
+  .btn--sm {
+    min-height: 44px;
+  }
+}
+
 .btn--primary {
   background: linear-gradient(150deg, #7a5cff, #4a2fd6);
   color: #fff;
@@ -513,6 +522,7 @@ input {
 }
 
 .icon-btn {
+  position: relative;
   width: 40px;
   height: 40px;
   flex: none;
@@ -525,6 +535,13 @@ input {
   font-weight: 700;
   color: var(--ink-2);
   transition: transform 0.13s var(--ease);
+}
+
+/* 40px of chrome, 46px of tap — the halo keeps the topbar visually light */
+.icon-btn::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
 }
 
 .icon-btn:active {
@@ -554,11 +571,19 @@ input {
 }
 
 .link {
+  position: relative;
   padding: 8px 12px;
   border-radius: 10px;
   font-weight: 700;
   font-size: 0.92rem;
   color: var(--ink-2);
+}
+
+/* text links keep their quiet size; the tap area reaches the 44px floor */
+.link::after {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
 }
 
 .link:active {
@@ -596,7 +621,9 @@ input {
 
 .seg__opt {
   flex: 1;
-  min-height: 42px;
+  /* 44px is the floor for a comfortable thumb — every seg inherits it, so the
+     small variants (nerve control, settings rows) stay honest tap targets. */
+  min-height: 44px;
   padding: 8px 4px;
   border: 1px solid transparent;
   border-radius: 11px;
@@ -1605,8 +1632,8 @@ input {
 }
 
 .namerow__del {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   flex: none;
   border-radius: 12px;
   display: grid;
@@ -2406,15 +2433,8 @@ input {
     min-height: calc(26px * 7 / 5);
   }
 
-  .reactions {
-    margin-top: 4px;
-  }
-
-  .reactions__btn {
-    min-width: 38px;
-    padding-block: 2px 3px;
-    font-size: 0.95rem;
-  }
+  /* (.reactions and .press trims live in the late short-screen block — their
+     base rules are declared in section 10, after this tier, and would win.) */
 
   .btn--xl {
     padding-block: 12px;
@@ -2432,12 +2452,11 @@ input {
     padding-block: 6px;
   }
 
-  .hand--tally {
-    min-height: 48px;
-  }
+  /* (the hand and card sizes for this tier live in the late short-screen
+     block, past the 660 tier that would otherwise out-cascade them) */
 
-  .hand--tally .card {
-    --cw: 36px;
+  .roomchip {
+    padding-block: 3px;
   }
 
   .readout__score {
@@ -2456,6 +2475,47 @@ input {
 
   .pad__key {
     min-height: 36px;
+  }
+
+  /* The scoreboard is the designated scroller, so it can give a little more
+     here — the hand and the controls cannot. */
+  .standings {
+    min-height: 76px;
+  }
+
+  .standings.is-compact {
+    min-height: 108px;
+  }
+
+  /* the dealt-mode rows each give a few pixels so Hit and Stay never clip:
+     the visible chrome tightens, every 44px tap halo stays where it was */
+  .dealt {
+    gap: 5px;
+  }
+
+  [data-mode='dealt'] .tally__card {
+    margin-block: 4px auto;
+  }
+
+  .dealt__status {
+    padding-block: 3px;
+  }
+
+  .dealt__actions .btn {
+    padding-block: 8px;
+  }
+
+  .advice__row {
+    gap: 5px;
+    padding-block: 4px;
+  }
+
+  .readout {
+    padding-top: 5px;
+  }
+
+  .tally__head {
+    min-height: 20px;
   }
 }
 
@@ -2819,6 +2879,13 @@ input {
   transition: background 0.22s var(--ease);
 }
 
+/* the 30px track is the visual; the tap target is a 46px halo around it */
+.switch::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
 .switch::after {
   content: '';
   position: absolute;
@@ -2850,7 +2917,6 @@ input {
 
 .opt .seg__opt {
   font-size: 0.8rem;
-  min-height: 34px;
 }
 
 /* Toasts drop from the top: every screen keeps its controls at the bottom, and
@@ -3177,6 +3243,7 @@ input {
 }
 
 .reactions__btn {
+  position: relative;
   flex: none;
   min-width: 42px;
   padding: 3px 0 4px;
@@ -3191,15 +3258,22 @@ input {
     background 0.2s var(--ease);
 }
 
+/* The pill stays small so the tray stays one quiet line, but the tap target
+   doesn't: an invisible halo brings the effective hit area to ≥44px. The
+   horizontal reach stops at half the tray gap so neighbours never overlap,
+   and the halo leans downward — the scoreboard above is tappable when aiming. */
+.reactions__btn::before {
+  content: '';
+  position: absolute;
+  inset: -7px -3px -10px;
+}
+
 .reactions__btn:active {
   transform: scale(1.2);
 }
 
-/* the chat door, wearing its unread count */
-.reactions__btn--chat {
-  position: relative;
-}
-
+/* the chat door's unread count — the tray button itself is already the
+   positioning context, like every reaction pill */
 .reactions__badge {
   position: absolute;
   top: -5px;
@@ -3217,11 +3291,23 @@ input {
 
 /* ── table chat ──────────────────────────────────────────────────────────── */
 
+/* The chat sheet hangs from the top of the screen rather than centring: when
+   the iOS keyboard rises it covers the bottom half, and Safari's pan-to-input
+   can only keep the chatbar visible if the panel started high. The modal's own
+   safe-area padding keeps the input off the home indicator when there is no
+   keyboard. */
+#modal-chat {
+  place-items: start center;
+}
+
 .modal__panel--chat {
   display: flex;
   flex-direction: column;
   gap: 10px;
   width: min(440px, 100%);
+  margin-top: min(8dvh, 44px);
+  /* dvh, not %: the panel must answer to the live viewport, URL bar and all */
+  max-height: calc(100dvh - var(--safe-t) - var(--safe-b) - 32px - min(8dvh, 44px));
 }
 
 .chat {
@@ -3231,8 +3317,10 @@ input {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  min-height: 120px;
-  max-height: min(44vh, 340px);
+  /* the list is the give: it shrinks before the chatbar or the close button */
+  flex: 0 1 auto;
+  min-height: 88px;
+  max-height: min(44dvh, 340px);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -3316,6 +3404,7 @@ input {
 }
 
 .press__chip {
+  position: relative;
   padding: 4px 9px;
   border-radius: 999px;
   border: 1px solid color-mix(in oklab, var(--gold) 55%, transparent);
@@ -3325,6 +3414,18 @@ input {
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
+}
+
+/* A chip is ~25px of visible pill; a wager should not demand marksmanship.
+   The halo takes the tap area past 44px without spending vertical budget. */
+.press__chip::before {
+  content: '';
+  position: absolute;
+  inset: -10px -3px;
+}
+
+.press__chip:disabled::before {
+  display: none;
 }
 
 .press__chip:disabled {
@@ -3347,6 +3448,26 @@ input {
 .stand.is-horse {
   border-style: dashed;
   border-color: color-mix(in oklab, var(--gold) 50%, transparent);
+}
+
+/* somebody can win the game if this round holds — the table's alarm bell */
+.chip[data-tone='gamepoint'] {
+  background: var(--gold);
+  color: #2a1a00;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* the press row speaks in two lines: what it is, what a chip buys */
+.press__label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.press__label small {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--ink-3);
 }
 
 /* ── the next game's roll call ───────────────────────────────────────────── */
@@ -3505,7 +3626,9 @@ html.fx-off .row.is-lead {
 
 /* ── landscape / larger screens ────────────────────────────────────────── */
 
-@media (min-width: 520px) {
+/* Wide alone isn't licence — a phone on its side is 844×390, and 54px keys
+   would eat a third of it. The bigger cards and keys need width AND height. */
+@media (min-width: 520px) and (min-height: 640px) {
   .hand .card {
     --cw: 58px;
   }
@@ -3530,10 +3653,124 @@ html.fx-off .row.is-lead {
   }
 }
 
+/* ── short screens, late-cascade annex ───────────────────────────────────
+   The trims that belong to the 740/620 tiers but can't live there: their
+   base rules (section 10's reactions and press row, the 660 tier's hand)
+   are declared later in the file and would win the tie. Placed here, after
+   everything they must beat, the same design keeps tightening in order:
+   740 → 660 → 620 → 470. */
+@media (max-height: 740px) {
+  .reactions {
+    margin-top: 4px;
+  }
+
+  .reactions__btn {
+    min-width: 38px;
+    padding-block: 2px 3px;
+    font-size: 0.95rem;
+  }
+
+  /* the wager row slims with everything else; the chips keep their 44px halo */
+  .press {
+    padding: 5px 10px;
+  }
+}
+
+/* When the wager row joins the stack, the feed pays for it — history yields
+   before anything a thumb needs. One line shorter here, newest-line-only in
+   the 620 tier below. */
+@media (max-height: 660px) {
+  .dealt:has(.press:not([hidden])) .feed {
+    max-height: 2.7em; /* 2 lines */
+  }
+
+  /* Expanding "why" must never push Hit and Stay off the bottom — on a short
+     phone the explanation floats over the hand as a popover instead of
+     growing the card. Same information, zero spent budget. */
+  .advice {
+    position: relative;
+  }
+
+  .advice__why {
+    position: absolute;
+    left: -2px;
+    right: -2px;
+    bottom: calc(100% + 4px);
+    z-index: 5;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: var(--surface-solid);
+    border: 1px solid var(--line-2);
+    box-shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.8);
+    max-height: 44dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (max-height: 620px) {
+  .hand,
+  .hand--tally {
+    min-height: 48px;
+  }
+
+  .hand .card,
+  .hand--tally .card {
+    --cw: 36px;
+  }
+
+  .reactions {
+    margin-top: 2px;
+  }
+
+  .press {
+    padding: 4px 9px;
+  }
+
+  .deck {
+    --dw: 20px;
+  }
+
+  .dealt:has(.press:not([hidden])) .feed {
+    max-height: 1.35em; /* newest line only */
+  }
+}
+
+/* Landscape phones (~390-430px tall): the short-screen tiers above already
+   apply; this only reins in the pieces they size for portrait proportions.
+   (After the 660 tier on purpose — these must win the cascade at this height.) */
+@media (max-height: 470px) {
+  .standings {
+    min-height: 64px;
+  }
+
+  .standings.is-compact {
+    min-height: 64px;
+  }
+
+  .feed {
+    max-height: 1.35em; /* 1 line */
+  }
+
+  .hand,
+  .hand--tally {
+    min-height: 48px;
+  }
+
+  /* 34px wide is 47px tall at the 5/7 aspect — still a legal tap target */
+  .hand .card,
+  .hand--tally .card {
+    --cw: 34px;
+  }
+}
+
 /* Desktop: the phone column leaves most of the window empty, so the room splits
    in two — the table on the left, your hand and the controls on the right. The
-   setup screens keep the single centred column. */
-@media (min-width: 900px) {
+   setup screens keep the single centred column.
+
+   A phone on its side gets the same split: 390px of height can't stack the
+   scoreboard above the hand, but it can seat them side by side. */
+@media (min-width: 900px), (min-width: 640px) and (max-height: 470px) {
   .app {
     max-width: 1060px;
   }

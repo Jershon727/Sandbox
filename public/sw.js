@@ -7,7 +7,7 @@
  * with no signal still opens and can keep score on its own.
  */
 
-const CACHE = 'flip7-v16';
+const CACHE = 'flip7-v17';
 
 const SHELL = [
   '.',

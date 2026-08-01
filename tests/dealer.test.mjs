@@ -898,11 +898,15 @@ test('a press bet is refused off-rule, off-turn, over-budget, or twice', () => {
     ok: false,
     why: 'not-your-turn',
   });
-  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 25 }).ok, false, 'over budget');
+  // No funds gate: everyone starts at 0, so a press must always be possible.
   assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 0 }).ok, false);
   assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 'x' }).ok, false);
   assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok, true);
-  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok, false, 'one per round');
+  assert.equal(
+    applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok,
+    false,
+    'not while one is riding',
+  );
 });
 
 test('a shielded hand has nothing to bet on', () => {
@@ -961,12 +965,10 @@ test('press state survives a snapshot and reaches the projection', () => {
   const back = restore(JSON.parse(JSON.stringify(snapshot(game))));
   assert.equal(back.pressBets, true);
   assert.deepEqual(back.byId(player.id).bet, player.bet);
-  assert.equal(back.byId(player.id).betUsed, true);
 
   const room = project(game, { code: 'ABCD' });
   assert.equal(room.pressBets, true);
   assert.deepEqual(room.players[player.id].bet, player.bet);
-  assert.equal(room.players[player.id].betUsed, true);
 });
 
 // ── the railbird bet ──────────────────────────────────────────────────────
@@ -985,9 +987,6 @@ test('a railbird bet needs the rule on, a dead bettor, a live horse, and the sta
   bot.status = Status.STAYED;
   assert.equal(game.placeRailbird('me', bot.id), false, 'the horse must be live');
   bot.status = Status.ACTIVE;
-  me.total = 4;
-  assert.equal(game.placeRailbird('me', bot.id), false, 'cannot stake what you lack');
-  me.total = 40;
   assert.equal(applyIntent(game, 'me', { do: 'railbird', targetId: bot.id }).ok, true);
   assert.equal(game.placeRailbird('me', bot.id), false, 'one per round');
 
@@ -1100,4 +1099,29 @@ test('a rematch needs a table worth dealing to, and everyone:true skips the roll
   });
   assert.equal(applyIntent(duo, 'me', { do: 'rematch', everyone: true }).ok, true);
   assert.equal(duo.byId('dana').benched, false, 'a shared phone deals everyone in');
+});
+
+test('a press from nothing can leave you owing the table', () => {
+  const game = pressGame(13);
+  const player = bettable(game, 0);
+  assert.equal(game.placeBet(player.id, 10), true, 'no funds gate — round one can press');
+  game.deck.push({ kind: 'number', value: 6, id: 'dup-6c' });
+  game.hit();
+  assert.equal(player.status, Status.BUSTED);
+  assert.equal(player.total, -10, 'in the hole, honestly');
+});
+
+test('every hit can carry a fresh press — doubling down is the point', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  assert.equal(game.placeBet(player.id, 5), true);
+  game.deck.push({ kind: 'number', value: 3, id: 'safe-3c' });
+  game.hit();
+  assert.equal(player.bet, null, 'the first press settled');
+
+  // Hand the turn straight back (test-only poke) and press again, bigger.
+  game.needAdvance = false;
+  game.turnIndex = game.players.indexOf(player);
+  assert.equal(game.request().playerId, player.id);
+  assert.equal(game.placeBet(player.id, 10), true, 'a second press on a later card');
 });

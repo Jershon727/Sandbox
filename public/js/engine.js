@@ -56,8 +56,7 @@ export class Flip7Game {
       status: Status.ACTIVE,
       roundScore: 0,
       bustCard: null,
-      bet: null, // a live press bet: { wager, payout }
-      betUsed: false, // one press per round
+      bet: null, // a live press bet riding the next card: { wager, payout }
       railbird: null, // out of the round, backing a horse: { targetId, stake, payout }
       roundBets: 0, // net press winnings this round, for the summary
       ready: false, // opted in to the next game, once this one is over
@@ -129,7 +128,6 @@ export class Flip7Game {
       p.roundScore = 0;
       p.bustCard = null;
       p.bet = null;
-      p.betUsed = false;
       p.railbird = null;
       p.roundBets = 0;
     }
@@ -251,7 +249,8 @@ export class Flip7Game {
    * bust you. The payout is set at the odds you took — wager × p/(1−p), the
    * exact bust chance from the exact remaining deck — so the bet is fair by
    * construction: pressing is pure nerve, not a strategy that always pays.
-   * One press per round; you can't stake points you don't have.
+   * A bet rides exactly one card, but every hit can carry a fresh one —
+   * doubling down on a fattening hand is the whole point.
    */
   placeBet(playerId, wager) {
     if (!this.pressBets) return false;
@@ -260,8 +259,10 @@ export class Flip7Game {
     const player = this.byId(playerId);
     const amount = Math.floor(Number(wager));
     if (!Number.isFinite(amount) || amount < 1) return false;
-    if (player.betUsed || player.bet) return false;
-    if (amount > player.total) return false;
+    if (player.bet) return false; // one bet per card — press again on the next
+    // No funds check: everyone starts a game at 0, and a press you could only
+    // afford late-game is a feature nobody meets. Lose from nothing and you
+    // owe the table — totals can go negative.
 
     const risk = bustChanceOf(tallyOf(this.deck), {
       numbers: player.numbers.map((c) => c.value),
@@ -275,7 +276,6 @@ export class Flip7Game {
 
     const payout = Math.max(1, Math.ceil((amount * risk) / (1 - risk)));
     player.bet = { wager: amount, payout };
-    player.betUsed = true;
     this.emit('bet', { playerId, wager: amount, payout, risk });
     return true;
   }
@@ -294,7 +294,6 @@ export class Flip7Game {
     if (!player || !horse || player === horse) return false;
     if (player.status !== Status.BUSTED && player.status !== Status.FROZEN) return false;
     if (player.railbird) return false;
-    if (player.total < RAIL_STAKE) return false;
     if (horse.status !== Status.ACTIVE) return false;
 
     player.railbird = { targetId, stake: RAIL_STAKE, payout: RAIL_WIN };
@@ -316,7 +315,7 @@ export class Flip7Game {
         p.roundBets += bet.payout;
         this.emit('railbird-won', { playerId: p.id, targetId: bet.targetId, payout: bet.payout });
       } else {
-        p.total = Math.max(0, p.total - bet.stake);
+        p.total -= bet.stake; // below zero if it must
         p.roundBets -= bet.stake;
         this.emit('railbird-lost', { playerId: p.id, targetId: bet.targetId, stake: bet.stake });
       }
@@ -328,7 +327,7 @@ export class Flip7Game {
     if (!bet) return;
     player.bet = null;
     if (player.status === Status.BUSTED) {
-      player.total = Math.max(0, player.total - bet.wager);
+      player.total -= bet.wager; // below zero if it must — you owe the table
       player.roundBets -= bet.wager;
       this.emit('bet-lost', { playerId: player.id, wager: bet.wager });
     } else {

@@ -21,6 +21,7 @@ import {
   isAway,
   hostAwayFor,
   canRailbird,
+  roundScore,
   HOST_AWAY_TAKEOVER,
 } from './room.js';
 import { REACTIONS, CHAT_MAX, cleanChat } from './table.js';
@@ -700,6 +701,7 @@ function leaveRoom() {
   view.seenChat = null;
   view.chatUnread = 0;
   paintChatBadge();
+  view.gamePointSeen = null;
   view.lastDeckLeft = null;
   view.spectateSeen = null;
   view.lastConn = null;
@@ -1046,13 +1048,46 @@ function onState(state) {
     showWinner(state);
   }
 
+  announceGamePoint(state);
+
   // The roll call for the next game, live while the winner screen is up.
   if (state.status === 'finished') renderOverReady(state);
-  // A new game started under the winner screen: take it down everywhere, and
-  // let the next finish announce itself even if the same player wins again.
+  // A new game started under the winner screen: take it down everywhere, let
+  // the next finish announce itself even if the same player wins again, and
+  // reset the game-point memory — the new game reuses round numbers.
   if (state.status === 'playing' && view.shownWinner) {
     view.shownWinner = null;
+    view.gamePointSeen = null;
     closeModal($('modal-over'));
+  }
+}
+
+/**
+ * Game point: somebody's banked total plus what they're holding has crossed
+ * the target — if the round ends now, they win the game. That changes what
+ * every other hand at the table should be doing, so it gets one loud banner
+ * per player per round, plus the persistent chip on the standings (scorer.js).
+ */
+function announceGamePoint(state) {
+  if (!state.target || state.lobby || state.status !== 'playing' || state.roundOver) return;
+  for (const p of playerList(state)) {
+    const live = (p.total ?? 0) + roundScore(p.hand);
+    if (live < state.target) continue;
+    const key = `${state.round}:${p.id}`;
+    view.gamePointSeen ??= new Set();
+    if (view.gamePointSeen.has(key)) continue;
+    view.gamePointSeen.add(key);
+
+    const mine = p.id === store.actingId;
+    sfx.count();
+    buzz([20, 40, 20]);
+    showBanner(mine ? 'You can win this round' : `${p.name} can win this round`, {
+      tone: 'flip7',
+      sub: `${live} if it holds — past ${state.target}. Bank big or beat it.`,
+      ms: 1900,
+    });
+    announce(`${mine ? 'You' : p.name} can win this round with ${live}.`);
+    break; // one banner per render; any others announce on the next state
   }
 }
 
@@ -1416,30 +1451,48 @@ function renderPress(state, { me, myTurn, pending, over }) {
     !over &&
     me?.state === 'active' &&
     !me?.waiting;
-  const canPress = idle && !me.betUsed && risk > 0 && risk < 1 && (me.total ?? 0) >= 5;
+  // No funds gate: totals can go negative, so round one can press too. Only a
+  // hand with real bust odds has anything to bet on.
+  const canPress = idle && risk > 0 && risk < 1;
   host.hidden = !(idle && (bet || canPress));
   if (host.hidden) return;
 
+  // Two lines of plain words: what this is, and what a chip buys you.
+  const say = (main, sub) => {
+    const strong = document.createElement('span');
+    strong.textContent = main;
+    const small = document.createElement('small');
+    small.textContent = sub;
+    label.replaceChildren(strong, small);
+  };
+
   if (bet) {
     host.dataset.armed = '';
-    label.textContent = `Pressing ${bet.wager} — survive this card for +${bet.payout}`;
+    say(
+      `${bet.wager} says this card won't bust you`,
+      `it rides on your very next card — survive and collect +${bet.payout}`,
+    );
     chipsHost.replaceChildren();
     return;
   }
 
   delete host.dataset.armed;
-  label.textContent = 'Press a bet on this card';
+  const pct = Math.round(risk * 100);
+  say(
+    'Press bet: survive your next card?',
+    `${pct}% bust odds — win the gold number, or the stake comes off your score`,
+  );
   chipsHost.replaceChildren();
   for (const wager of [5, 10, 15]) {
     const btn = document.createElement('button');
     btn.className = 'press__chip';
     btn.type = 'button';
     const payout = Math.max(1, Math.ceil((wager * risk) / (1 - risk)));
-    btn.disabled = wager > (me.total ?? 0);
     btn.textContent = `${wager} ⇢ +${payout}`;
+    btn.title = `Risk ${wager}, win ${payout}`;
     btn.setAttribute(
       'aria-label',
-      `Press ${wager} points — pays ${payout} if the next card doesn't bust you`,
+      `Press ${wager} points — pays ${payout} if the next card doesn't bust you, costs ${wager} if it does`,
     );
     btn.addEventListener('click', () => {
       sfx.modifier();

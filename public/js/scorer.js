@@ -691,6 +691,16 @@ export class Scorer {
       if (p.waiting) tags.append(chip('next round', 'waiting'));
       // Somebody who didn't ready up for this game is watching, not losing.
       if (p.benched) tags.append(chip('sitting out', 'waiting'));
+      // Somebody's banked-plus-holding has crossed the target: if the round
+      // ends now, they win the game. The whole table should be able to see it.
+      if (
+        !state.lobby &&
+        state.status === 'playing' &&
+        state.target &&
+        (p.total ?? 0) + p.round >= state.target
+      ) {
+        tags.append(chip('game point', 'gamepoint'));
+      }
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
       else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
@@ -737,7 +747,8 @@ export class Scorer {
       bar.className = 'stand__bar';
       const fill = document.createElement('span');
       fill.className = 'stand__fill';
-      fill.style.width = `${Math.min(100, ((p.total ?? 0) / (state.target || 200)) * 100)}%`;
+      // Clamped both ways: press-bet debts can drag a total below zero.
+      fill.style.width = `${Math.min(100, Math.max(0, ((p.total ?? 0) / (state.target || 200)) * 100))}%`;
       bar.append(fill);
 
       row.append(rank, name, round, total, bar);
