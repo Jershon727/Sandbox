@@ -22,6 +22,7 @@ import {
   nextOrder,
   endRoundUpdates,
   rematchUpdates,
+  tiedLeaders,
   applyPaths,
 } from '../public/js/room.js';
 
@@ -259,6 +260,31 @@ test('a tie at the finish line plays on', () => {
   assert.ok(!('status' in paths), 'the game is not over');
   assert.equal(tied.length, 2);
   assert.equal(paths.round, 2);
+
+  // Every phone reads the same tie off the published summary — the host isn't
+  // the only one who can know why another round is being dealt.
+  const fromResults = tiedLeaders(paths.lastRound.results, room.target);
+  assert.deepEqual(
+    fromResults.map((r) => r.name).sort(),
+    ['A', 'B'],
+  );
+  assert.equal(fromResults[0].total, 202);
+});
+
+test('tiedLeaders only reports a tie that forces another round', () => {
+  const results = (totals) => totals.map((total, i) => ({ id: `p${i}`, name: `P${i}`, total }));
+
+  // Nobody past the target: level scores are just level scores.
+  assert.equal(tiedLeaders(results([120, 120]), 200), null);
+  // A clear winner is not a tie.
+  assert.equal(tiedLeaders(results([212, 196]), 200), null);
+  // Past the target together, level at the top.
+  assert.equal(tiedLeaders(results([212, 212, 40]), 200).length, 2);
+  // Second place matching itself doesn't matter — only the top spot does.
+  assert.equal(tiedLeaders(results([212, 205, 205]), 200), null);
+  // Degenerate inputs stay quiet.
+  assert.equal(tiedLeaders([], 200), null);
+  assert.equal(tiedLeaders(results([212, 212]), 0), null);
 });
 
 test('clearing the target with the top score, but not alone, is not a win', () => {

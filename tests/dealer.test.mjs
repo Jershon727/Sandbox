@@ -17,6 +17,7 @@ import {
   restore,
   deckTally,
   MAX_SEATS,
+  SEAT_ACTIVE_MS,
 } from '../public/js/dealer.js';
 import { Status } from '../public/js/engine.js';
 
@@ -190,16 +191,47 @@ test('the dealer says which seat is yours rather than letting a phone guess', ()
   assert.deepEqual(again, { playerId: 'sam-phone', added: false, late: false });
   assert.equal(game.players.filter((p) => p.name === 'Sam').length, 1);
 
-  // New phone, same name — a dead battery coming back. It takes the seat over,
-  // and crucially gets told that seat's id rather than the one it invented.
-  const replacement = claimSeat(game, { id: 'sam-new-phone', name: 'sam' });
+  // New phone, same name, while Sam's seat is visibly being driven: not handed
+  // over on a name match alone. The dealer answers "that seat is taken" so the
+  // phone can ask its user whether it's really them.
+  const clash = claimSeat(game, { id: 'sam-new-phone', name: 'sam' });
+  assert.equal(clash.conflict, true);
+  assert.equal(clash.playerId, 'sam-phone');
+  assert.equal(game.byId('sam-new-phone'), undefined, 'no second seat was made');
+
+  // The same claim, confirmed — a dead battery coming back. It takes the seat
+  // over, and crucially gets told that seat's id rather than the one it invented.
+  const replacement = claimSeat(game, { id: 'sam-new-phone', name: 'sam', takeover: true });
   assert.equal(replacement.playerId, 'sam-phone');
   assert.equal(replacement.added, false);
+  assert.equal(replacement.conflict, undefined);
   assert.equal(game.players.length, 3);
-
-  // A different person with the same name does not silently drive Sam's seat
-  // under a new id — they get told the seat that exists.
   assert.equal(game.byId('sam-new-phone'), undefined);
+});
+
+test('an idle seat is handed back without ceremony', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  // Sam's phone has said nothing for longer than the activity window — that is
+  // exactly the dead-battery case, and it must stay frictionless.
+  game.byId('sam-phone').lastSeen = Date.now() - SEAT_ACTIVE_MS - 1;
+
+  const back = claimSeat(game, { id: 'sam-new-phone', name: 'Sam' });
+  assert.equal(back.conflict, undefined);
+  assert.equal(back.playerId, 'sam-phone');
+});
+
+test('any request from a phone proves its seat is being driven', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  game.byId('sam-phone').lastSeen = Date.now() - SEAT_ACTIVE_MS - 1;
+
+  // Even an ask the dealer refuses is proof of life for the seat that asked.
+  applyIntent(game, 'sam-phone', { do: 'hit' });
+  const clash = claimSeat(game, { id: 'imposter-phone', name: 'Sam' });
+  assert.equal(clash.conflict, true);
 });
 
 test('a full table refuses a seat instead of losing the request', () => {
@@ -566,6 +598,15 @@ test('every event a player should notice becomes a readable line', () => {
     line({ type: 'second-chance', playerId: me.id, card: { value: 5 } }),
     /used their Second Chance/,
   );
+
+  // A tie at the finish line deals another round; the account has to say why.
+  me.total = 212;
+  bot.total = 212;
+  const tie = line({ type: 'tiebreak', playerIds: [me.id, bot.id] });
+  assert.ok(tie.includes('Jack'), tie);
+  assert.ok(tie.includes(bot.name), tie);
+  assert.ok(tie.includes('tied at 212'), tie);
+  assert.match(tie, /one more round/);
 
   // Bookkeeping the player doesn't need to read stays out of the account.
   for (const type of ['draw', 'turn', 'defer']) {

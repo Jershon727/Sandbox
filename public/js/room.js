@@ -137,6 +137,19 @@ export function roundLooksDone(room) {
   return list.every((p) => p.hand.busted || p.hand.numbers.length >= FLIP7_TARGET);
 }
 
+/**
+ * Level at the finish line: the players forcing a tiebreak round, or null.
+ * Works on the published round results, so every phone — host or not, dealt or
+ * scorekeeping — reads the same tie off the same summary.
+ */
+export function tiedLeaders(results, target) {
+  if (!target || !results?.length) return null;
+  const best = Math.max(...results.map((r) => r.total ?? 0));
+  if (best < target) return null;
+  const leaders = results.filter((r) => (r.total ?? 0) === best);
+  return leaders.length > 1 ? leaders : null;
+}
+
 export function nextOrder(room) {
   const list = playerList(room);
   return list.length ? Math.max(...list.map((p) => p.order ?? 0)) + 1 : 0;

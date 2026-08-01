@@ -16,7 +16,9 @@ import {
   roundStarted,
   playerList,
   standings,
+  tiedLeaders,
 } from './room.js';
+import { bustChance, riskBand } from './odds.js';
 import {
   settings,
   saveSettings,
@@ -39,7 +41,7 @@ import {
 import { sfx, setSoundEnabled, unlockSound } from './sound.js';
 import { initFx, setFxEnabled, celebrate } from './fx.js';
 import { createCard } from './cardview.js';
-import { seatColor } from './avatar.js';
+import { seatColor, monogram } from './avatar.js';
 import { ACTIONS, cardName } from './cards.js';
 
 const $ = (id) => document.getElementById(id);
@@ -56,6 +58,8 @@ const view = {
   wasMyTurn: false, // to catch the moment the turn becomes yours
   wasMineToAim: false,
   lastActor: undefined, // on a shared phone, who was last handed it
+  spectateId: null, // whose hand the read-only strip is showing
+  armTimer: 0, // Hit/Stay stay inert for a beat after appearing
 };
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -183,7 +187,12 @@ function wireChrome() {
     if (opener) {
       sfx.tap();
       const which = opener.dataset.open;
-      if (which === 'rules') $('rules-target').textContent = String(store.state?.target ?? setup.target);
+      if (which === 'rules') {
+        $('rules-target').textContent = String(store.state?.target ?? setup.target);
+        // The "using this app" section depends on who is holding the cards.
+        $('rules-real').hidden = store.isDealt;
+        $('rules-dealt').hidden = !store.isDealt;
+      }
       if (which === 'menu') paintMenu();
       openModal(which);
       return;
@@ -203,8 +212,14 @@ function wireChrome() {
   $('btn-join').addEventListener('click', joinGame);
   $('btn-resume').addEventListener('click', resumeGame);
   $('btn-end-round').addEventListener('click', endRound);
-  $('btn-dhit').addEventListener('click', () => store.intent({ do: 'hit' }));
+  // Both buttons check the arming window: they appear the instant the turn
+  // does, and a tap already in flight toward that spot shouldn't count.
+  $('btn-dhit').addEventListener('click', () => {
+    if (actionsArming()) return;
+    store.intent({ do: 'hit' });
+  });
   $('btn-dstay').addEventListener('click', () => {
+    if (actionsArming()) return;
     sfx.stay();
     store.intent({ do: 'stay' });
   });
@@ -223,6 +238,18 @@ function wireChrome() {
   $('btn-manage').addEventListener('click', openPlayers);
   $('players-add').addEventListener('click', addPlayerRow);
   $('players-save').addEventListener('click', savePlayers);
+
+  // The "that name is already playing" choice: rejoin as them, or rename.
+  $('claim-rejoin').addEventListener('click', () => {
+    closeModal($('modal-claim'));
+    joinGame({ takeover: true });
+  });
+  $('claim-fresh').addEventListener('click', () => {
+    const input = $('join-name');
+    input.value = freshName((input.value || '').trim());
+    closeModal($('modal-claim'));
+    joinGame();
+  });
 
   const code = $('join-code');
   code.addEventListener('input', () => {
@@ -493,7 +520,9 @@ async function hostGame() {
   }
 }
 
-async function joinGame() {
+async function joinGame(opts = {}) {
+  // Also wired straight to a click, so the argument may be an event.
+  const takeover = opts?.takeover === true;
   const btn = $('btn-join');
   const code = normalizeCode($('join-code').value);
   const name = ($('join-name').value || '').trim().slice(0, 14);
@@ -520,12 +549,19 @@ async function joinGame() {
     let last = null;
     for (const mode of modes) {
       try {
-        await store.join({ code, name, mode });
+        await store.join({ code, name, mode, takeover });
         joined = true;
         break;
       } catch (err) {
         last = err;
+        // The room exists and the name is taken — trying another transport
+        // would only bury that answer under a "no such room".
+        if (err?.code === 'seat-active') break;
       }
+    }
+    if (!joined && last?.code === 'seat-active') {
+      openClaimModal(name);
+      return;
     }
     if (!joined) throw last ?? new Error('Could not join');
 
@@ -541,6 +577,28 @@ async function joinGame() {
   } finally {
     busy(btn, false);
   }
+}
+
+/**
+ * The name you typed is already being played by someone whose phone looks very
+ * much alive. Rejoining silently would put two people in one seat, so ask:
+ * that's you on a new phone, or a second person who needs their own name?
+ */
+function openClaimModal(name) {
+  $('claim-title').textContent = `${name} is already playing`;
+  $('claim-lede').textContent =
+    'Someone at the table is using that name right now. Rejoin as them only if that was you — otherwise join with your own name.';
+  $('claim-rejoin').textContent = `That's me — take my seat back`;
+  $('claim-fresh').textContent = `Join as ${freshName(name)}`;
+  openModal('claim');
+}
+
+/** "Sam" → "Sam 2", "Sam 2" → "Sam 3", capped at the name-length limit. */
+function freshName(name) {
+  const m = name.match(/^(.*?)\s*(\d+)$/);
+  const base = m ? m[1] : name;
+  const n = m ? Number(m[2]) + 1 : 2;
+  return `${base.slice(0, 14 - String(n).length - 1)} ${n}`;
 }
 
 async function resumeGame() {
@@ -697,7 +755,12 @@ function renderDealt(state) {
   // there's one place the host looks for "deal".
   const seats = playerList(state).length;
   const canDeal = (state.lobby || state.roundOver) && store.isHost && state.status !== 'finished';
-  $('dealt-actions').hidden = !myTurn || !!pending;
+  const actions = $('dealt-actions');
+  const showActions = myTurn && !pending;
+  // Visible the instant the turn is, but inert for a beat: a tap already on its
+  // way down toward where the buttons weren't must not hit one.
+  if (showActions && actions.hidden) armActions(actions);
+  actions.hidden = !showActions;
   $('btn-deal-next').hidden = !canDeal;
   if (canDeal) {
     // Dealing to a table of one would deal the host a hand and end the round.
@@ -719,6 +782,17 @@ function renderDealt(state) {
   $('dealt').dataset.turn = mineToTarget ? 'aim' : myTurn ? 'mine' : over ? 'over' : 'theirs';
 
   renderAim(state, mineToTarget);
+  renderSpectate(state);
+
+  // The deck is public arithmetic — every card is dealt face up — so say how
+  // much of it is left rather than making people count the feed.
+  const deckLine = $('deck-count');
+  const showDeck = !state.lobby && typeof state.deckLeft === 'number' && !over;
+  deckLine.hidden = !showDeck;
+  if (showDeck) {
+    deckLine.textContent = `${state.deckLeft} ${state.deckLeft === 1 ? 'card' : 'cards'} left in the deck`;
+  }
+
   $('dealt-status').textContent = dealtStatus(state, {
     myTurn,
     pending,
@@ -748,19 +822,112 @@ function renderAim(state, mineToAim) {
     holder.replaceChildren(createCard(pending.card ?? { kind: 'action', action: pending.action }));
   }
 
+  // An armed target turns the panel into the confirmation step.
+  const armed = scorer.armedTargetId ? state.players?.[scorer.armedTargetId]?.name : null;
+  if (armed) {
+    $('aim-text').textContent = {
+      freeze: `Freeze ${armed}? Tap their name again to confirm — or tap someone else.`,
+      flip3: `Make ${armed} flip three? Tap their name again to confirm — or tap someone else.`,
+      gift: `Give ${armed} the Second Chance? Tap their name again to confirm — or tap someone else.`,
+    }[pending.action];
+    return;
+  }
+
   const targets = pending.targets.length;
   const only = targets === 1 ? state.players?.[pending.targets[0]]?.name : null;
   $('aim-text').textContent = {
     freeze: only
-      ? `You drew Freeze. ${only} is the only one left — tap them to end their round.`
-      : 'You drew Freeze. Tap a player to make them bank and sit out.',
+      ? `You drew Freeze. ${only} is the only one left — tap their name on the scoreboard above.`
+      : 'You drew Freeze. Tap a name on the scoreboard above to make them bank and sit out.',
     flip3: only
-      ? `You drew Flip Three. Tap ${only} to make them flip three cards.`
-      : 'You drew Flip Three. Tap a player to make them flip three cards.',
+      ? `You drew Flip Three. Tap ${only} on the scoreboard above to make them flip three cards.`
+      : 'You drew Flip Three. Tap a name on the scoreboard above to make them flip three cards.',
     gift: only
-      ? `A second Second Chance — tap ${only} to give it to them.`
-      : 'A second Second Chance. Tap a player to give it away.',
+      ? `A second Second Chance — tap ${only} on the scoreboard above to give it to them.`
+      : 'A second Second Chance. Tap a name on the scoreboard above to give it away.',
   }[pending.action];
+}
+
+/**
+ * Somebody else is playing and every card in Flip 7 is face up — so show their
+ * hand rather than making spectators read the feed backwards: a compact strip
+ * of the cards they're holding, what they'd bank, and their live bust odds.
+ */
+function renderSpectate(state) {
+  const host = $('spectate');
+  const live = !state.lobby && !state.roundOver && state.status !== 'finished';
+  // Follow whoever the table is waiting on; between automatic steps (deals,
+  // resolving actions) keep the last player rather than flickering away.
+  let focusId = live ? (state.pending?.byId ?? state.turnId ?? view.spectateId) : null;
+  if (focusId === store.actingId) focusId = null;
+  const watched = focusId ? state.players?.[focusId] : null;
+  view.spectateId = watched ? focusId : null;
+  host.hidden = !watched;
+  if (!watched) {
+    delete host.dataset.key;
+    return;
+  }
+
+  const hand = watched.hand ?? {};
+  const numbers = hand.numbers ?? [];
+  const mods = hand.mods ?? [];
+  const risk = bustChance(state, focusId);
+
+  const who = $('spectate-who');
+  who.replaceChildren(
+    monogram(watched.name, watched.order ?? 0),
+    document.createTextNode(
+      `${watched.name} — ${hand.busted ? 'busted' : `holding ${roundScoreOf(watched)}`}`,
+    ),
+  );
+  const stat = $('spectate-stat');
+  stat.textContent = hand.busted
+    ? ''
+    : hand.chance
+      ? 'shielded'
+      : `${Math.round(risk * 100)}% bust`;
+  stat.dataset.band = hand.busted || hand.chance ? 'safe' : riskBand(risk);
+
+  // Rebuild the cards only when the hand actually changes, so the strip doesn't
+  // churn on every heartbeat.
+  const key = [
+    focusId,
+    numbers.join(','),
+    mods.map((m) => `${m.op}${m.value}`).join(','),
+    hand.chance ? 'c' : '',
+    hand.bustCard ? 'k' : '',
+  ].join('|');
+  if (host.dataset.key === key) return;
+  host.dataset.key = key;
+
+  const cards = $('spectate-cards');
+  cards.replaceChildren();
+  for (const v of numbers) {
+    const card = createCard({ kind: 'number', value: v });
+    if (hand.busted) card.classList.add('is-spent');
+    if (hand.bustCard?.kind === 'number' && hand.bustCard.value === v) card.classList.add('is-clash');
+    cards.append(card);
+  }
+  for (const m of mods) cards.append(createCard({ kind: 'modifier', op: m.op, value: m.value }));
+  if (hand.chance) cards.append(createCard({ kind: 'action', action: 'chance' }));
+  if (hand.bustCard) {
+    const killer = createCard(hand.bustCard);
+    killer.classList.add('is-killer');
+    cards.append(killer);
+  }
+}
+
+/** Hit and Stay: on screen at once, tappable a beat later. */
+function armActions(el) {
+  el.dataset.arming = '';
+  clearTimeout(view.armTimer);
+  view.armTimer = setTimeout(() => {
+    delete el.dataset.arming;
+  }, 400);
+}
+
+function actionsArming() {
+  return $('dealt-actions').dataset.arming !== undefined;
 }
 
 /**
@@ -1034,7 +1201,7 @@ function onSyncError(error) {
   toast(error?.message ?? 'Lost touch with the room');
 }
 
-function showRoundSummary(last) {
+async function showRoundSummary(last) {
   const state = store.state;
   $('round-title').textContent = `Round ${last.round}`;
   fillScores(
@@ -1049,11 +1216,42 @@ function showRoundSummary(last) {
     })),
     state.target,
   );
+
+  // Level at the finish line means one more round, exactly like the card game —
+  // but silently dealing it looks like the app ignored the target. Say so.
+  const tied = tiedLeaders(last.results ?? [], state.target);
+  const note = $('round-note');
+  note.hidden = !tied;
+  if (tied) {
+    const names = andList(tied.map((t) => t.name));
+    note.textContent = `${names} tied at ${tied[0].total} — one more round decides it.`;
+    announce(note.textContent);
+  }
+
+  // Only the host's tap actually deals; pretending otherwise teaches everyone
+  // else that the button is broken.
+  const hostName = state.players?.[state.hostId]?.name ?? 'the host';
   $('btn-next-round').textContent = store.isDealt
-    ? `Deal round ${last.round + 1}`
+    ? store.isHost
+      ? `Deal round ${last.round + 1}`
+      : `Close — waiting for ${hostName} to deal`
     : `Start round ${last.round + 1}`;
+
+  // The tie gets its beat before the scores cover it.
+  if (tied) {
+    await showBanner(`Tied at ${tied[0].total}`, {
+      sub: 'one more round decides it',
+      ms: 1500,
+    });
+  }
   openModal('round');
   sfx.count();
+}
+
+/** "Sam", "Sam and Dana", "Sam, Dana and Rex". */
+function andList(names) {
+  if (names.length < 2) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 }
 
 function showWinner(state) {
@@ -1180,7 +1378,16 @@ async function savePlayers() {
   await store.update(paths);
   // New rows need ids, which addPlayer allocates.
   for (const row of editRows.filter((r) => !r.id)) {
-    await store.addPlayer(row.name.trim() || 'Player');
+    try {
+      await store.addPlayer(row.name.trim() || 'Player');
+    } catch (err) {
+      // A name already being actively played can't just be absorbed.
+      if (err?.code === 'seat-active') {
+        toast(`${row.name.trim()} is already playing — pick another name`);
+      } else {
+        toast(err?.message ?? 'Could not add that player');
+      }
+    }
   }
 
   closeModal($('modal-players'));

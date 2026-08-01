@@ -329,8 +329,18 @@ wss.on('connection', (socket, request) => {
       if (entry.table) {
         let seat = null;
         if (msg.seat?.id || msg.seat?.name) {
-          seat = claimSeat(entry.table.game, { id: msg.seat.id, name: msg.seat.name });
+          seat = claimSeat(entry.table.game, {
+            id: msg.seat.id,
+            name: msg.seat.name,
+            takeover: msg.seat.takeover === true,
+          });
           if (!seat) return fail(socket, 'room-full', 'That table is full.');
+          // A seat somebody is actively driving is not handed over on a name
+          // match alone — the joiner has to confirm it's really them.
+          if (seat.conflict) {
+            const held = entry.table.game.byId(seat.playerId);
+            return fail(socket, 'seat-active', `${held?.name ?? 'That name'} is already playing.`);
+          }
         }
 
         if (seat?.added) {

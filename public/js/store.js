@@ -13,6 +13,7 @@
 import {
   applyPaths,
   blankRoom,
+  isAway,
   makeRoomCode,
   makeId,
   newPlayer,
@@ -242,11 +243,17 @@ export class Store {
     return code;
   }
 
-  async join({ code, name, mode = 'firebase' }) {
+  /**
+   * `takeover: true` means the user has confirmed that a seat already playing
+   * under this name is theirs to take back. Without it, a name that matches a
+   * seat somebody is actively driving is refused with `seat-active`, so the UI
+   * can ask rather than letting two people silently share one hand.
+   */
+  async join({ code, name, mode = 'firebase', takeover = false }) {
     const clean = normalizeCode(code);
     const sync = await this._backend(mode);
     const myId = makeId();
-    const room = await sync.join(clean, { id: myId, name });
+    const room = await sync.join(clean, { id: myId, name, takeover });
     if (!room) {
       const err = new Error(`No game found with the code ${clean}`);
       err.code = 'room-missing';
@@ -258,6 +265,14 @@ export class Store {
     const existing = playerList(room).find(
       (p) => p.name.trim().toLowerCase() === name.trim().toLowerCase(),
     );
+    // In a dealt game the dealer makes this call itself; here the heartbeat is
+    // the evidence. A seat still beating belongs to somebody, so taking it over
+    // needs the user to say "that's me".
+    if (existing && room.kind !== 'dealt' && !takeover && !isAway(existing)) {
+      const err = new Error(`${existing.name} is already playing`);
+      err.code = 'seat-active';
+      throw err;
+    }
     // In a dealt game the dealer seats us and says which seat that was. Take its
     // word over our own guess: matching by name picks the wrong seat when two
     // people share one, and the seat the dealer is dealing to would then sit

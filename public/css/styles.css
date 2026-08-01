@@ -1823,6 +1823,81 @@ input {
   }
 }
 
+/* ── watching somebody else's turn ───────────────────────────────────────── */
+
+/* Every card in Flip 7 is dealt face up, so the active player's hand is public
+   information — a compact read-only strip of it, with their running total and
+   live bust odds, is what makes other people's turns watchable. */
+.spectate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 9px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  animation: feedIn 0.24s var(--ease-out) both;
+}
+
+.spectate__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.78rem;
+  color: var(--ink-2);
+}
+
+.spectate__who {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spectate__stat {
+  flex: none;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-3);
+}
+
+.spectate__stat[data-band='warm'] {
+  color: var(--warm);
+}
+
+.spectate__stat[data-band='hot'] {
+  color: var(--hot);
+}
+
+.spectate__cards {
+  --cw: 30px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  /* one card row at the strip's --cw and the card's 5/7 aspect */
+  min-height: calc(30px * 7 / 5);
+}
+
+/* the strip's killer card needs a slimmer ring at this size */
+.spectate__cards .card.is-killer {
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--hot) 22%, transparent);
+}
+
+/* what's left in the deck — public arithmetic, counted for you */
+.deckline {
+  margin: -3px 2px 0;
+  text-align: right;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
 
 .dealt {
   flex: none;
@@ -1843,6 +1918,21 @@ input {
   display: grid;
   grid-template-columns: 1fr 1.35fr;
   gap: 9px;
+}
+
+/* Hit and Stay appear the moment the turn does, but stay inert for a beat so a
+   tap already falling toward that spot can't land on them. Opacity only — the
+   buttons must not move or resize when they arm. */
+.dealt__actions .btn {
+  transition: opacity 0.2s var(--ease);
+}
+
+.dealt__actions[data-arming] {
+  pointer-events: none;
+}
+
+.dealt__actions[data-arming] .btn {
+  opacity: 0.7;
 }
 
 .btn--stay {
@@ -1963,6 +2053,20 @@ input {
   color: #2a1a00;
   font-size: 0.6875rem;
   font-weight: 900;
+}
+
+/* The first tap armed this row; the action lands on the second. Steady rather
+   than pulsing — the question has been asked, the row is waiting on the answer. */
+.stand.is-armed {
+  border-color: var(--gold);
+  background: color-mix(in oklab, var(--gold) 28%, transparent);
+  animation: none;
+}
+
+.stand.is-armed .stand__name::after {
+  content: 'again?';
+  background: var(--hot);
+  color: #fff;
 }
 
 .stand__round.is-settled {
@@ -2155,6 +2259,15 @@ input {
     gap: 6px;
   }
 
+  .spectate {
+    padding: 6px 9px 7px;
+  }
+
+  .spectate__cards {
+    --cw: 26px;
+    min-height: calc(26px * 7 / 5);
+  }
+
   .btn--xl {
     padding-block: 12px;
   }
@@ -2185,6 +2298,12 @@ input {
 
   .feed {
     max-height: 2.7em; /* 2 lines */
+  }
+
+  /* The headline — "Maya · holding 34 · 41% bust" — carries the strip; the
+     card row is the first thing a very short screen can afford to lose. */
+  .spectate__cards {
+    display: none;
   }
 
   .pad__key {
@@ -2307,6 +2426,12 @@ input {
   color: var(--ink-2);
   font-weight: 500;
   margin: -8px 0 16px;
+}
+
+/* a tie at the finish line is the headline of that round's summary */
+.modal__lede--tied {
+  color: var(--gold);
+  font-weight: 800;
 }
 
 .modal__actions {

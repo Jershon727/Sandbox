@@ -152,6 +152,14 @@ export function createLocalSync() {
       if (seatWanted?.id || seatWanted?.name) {
         const seat = claimSeat(table.game, seatWanted);
         if (!seat) throw Object.assign(new Error('That table is full'), { code: 'room-full' });
+        // The name matches a seat that is being actively played. Same answer the
+        // relay gives: refuse, and let the caller ask whether it's really them.
+        if (seat.conflict) {
+          const held = table.game.byId(seat.playerId);
+          throw Object.assign(new Error(`${held?.name ?? 'That name'} is already playing`), {
+            code: 'seat-active',
+          });
+        }
         if (seat.added) {
           const player = table.game.byId(seat.playerId);
           noteFeed(table, {

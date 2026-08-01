@@ -43,6 +43,8 @@ export class Scorer {
     this.flag = null; // transient badge: bust | flip7 | save
     this.lastFlip7 = null; // so a Flip 7 is only announced once
     this.dealSource = null;
+    this.armedTargetId = null; // first tap picks a target, the second confirms
+    this.pendingKey = null; // which action card the armed target belongs to
     this.scrolledTo = null; // whose row the scoreboard is following
     this.userScrolled = false; // ...unless somebody scrolled it themselves
   }
@@ -105,12 +107,26 @@ export class Scorer {
   }
 
   select(playerId) {
-    // In a dealt game, tapping a player is how you aim an action card.
+    // In a dealt game, tapping a player is how you aim an action card. Freezing
+    // the wrong person is not undoable, so the first tap arms and the second —
+    // on the same row — confirms; tapping somebody else re-arms onto them.
     const pending = this.store.state?.pending;
     if (this.store.isDealt) {
-      if (pending?.byId === this.store.actingId && pending.targets.includes(playerId)) {
-        sfx.tap();
-        this.store.intent({ do: 'target', targetId: playerId });
+      if (pending?.byId === this.store.actingId) {
+        if (!pending.targets.includes(playerId)) {
+          sfx.error();
+          toast('Pick one of the highlighted players');
+          return;
+        }
+        if (this.armedTargetId === playerId) {
+          this.armedTargetId = null;
+          sfx.tap();
+          this.store.intent({ do: 'target', targetId: playerId });
+        } else {
+          this.armedTargetId = playerId;
+          sfx.tap();
+          this.render();
+        }
       } else {
         sfx.error();
         toast('The dealer is running this one');
@@ -299,6 +315,13 @@ export class Scorer {
   render() {
     const state = this.store.state;
     if (!state) return;
+
+    // An armed target only makes sense for the action card it was armed under.
+    const pendingKey = state.pending ? `${state.pending.byId}:${state.pending.action}` : null;
+    if (pendingKey !== this.pendingKey) {
+      this.pendingKey = pendingKey;
+      this.armedTargetId = null;
+    }
 
     this.renderStandings();
 
@@ -505,6 +528,7 @@ export class Scorer {
         'is-target',
         state.pending?.byId === this.store.actingId && state.pending.targets.includes(p.id),
       );
+      row.classList.toggle('is-armed', p.id === this.armedTargetId);
       row.classList.toggle('is-frozen', p.state === 'frozen');
 
       const rank = document.createElement('span');

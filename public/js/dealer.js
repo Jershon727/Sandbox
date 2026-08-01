@@ -26,6 +26,21 @@ import { makeId } from './room.js';
 export const MIN_SEATS = 2;
 export const MAX_SEATS = 8;
 
+/**
+ * How recently a seat must have been driven before handing it to a new phone
+ * needs a yes. lastSeen here is stamped by the dealer itself — on seating and on
+ * every accepted intent — not by client heartbeats, which dealt rooms drop.
+ */
+export const SEAT_ACTIVE_MS = 120_000;
+
+/** Does this seat look like somebody is actually playing it right now? */
+function seatLooksActive(player, now = Date.now()) {
+  // A seat with no record — the host's, or one restored from an old snapshot —
+  // is treated as active: the safe failure is one extra confirmation tap, not a
+  // stranger silently driving somebody's hand.
+  return player.lastSeen === undefined || now - player.lastSeen < SEAT_ACTIVE_MS;
+}
+
 /** Seats for a new dealt game: the host, any friends joining later, and bots. */
 export function seatsFor({ hostId, hostName, bots = 1, botStyle = 'mixed' }) {
   const seats = [{ id: hostId, name: hostName, isBot: false }];
@@ -77,6 +92,7 @@ export function addSeat(game, { id, name }) {
     roundScore: 0,
     bustCard: null,
     joinedLate: game.phase === 'round',
+    lastSeen: Date.now(),
   });
   return true;
 }
@@ -90,15 +106,29 @@ export function addSeat(game, { id, name }) {
  * the game skipping a player. So the id this returns is the one to play as.
  *
  * Coming back under a name already at the table takes that seat over, which is
- * what someone whose phone died actually wants.
+ * what someone whose phone died actually wants — but only when that seat looks
+ * abandoned. A seat that acted moments ago is probably still being played, and a
+ * second person who happens to share the name must not silently hijack it: that
+ * case comes back as `conflict: true`, and the caller asks before either
+ * rejoining as them (`takeover: true`) or picking another name.
  */
-export function claimSeat(game, { id, name }) {
+export function claimSeat(game, { id, name, takeover = false }) {
   const clean = (String(name ?? '').trim() || 'Player').slice(0, 20);
-  if (id && game.byId(id)) return { playerId: id, added: false, late: false };
+  const existing = id ? game.byId(id) : null;
+  if (existing) {
+    existing.lastSeen = Date.now();
+    return { playerId: id, added: false, late: false };
+  }
 
   const key = clean.toLowerCase();
   const held = game.players.find((p) => !p.isBot && p.name.trim().toLowerCase() === key);
-  if (held) return { playerId: held.id, added: false, late: !!held.joinedLate };
+  if (held) {
+    if (!takeover && seatLooksActive(held)) {
+      return { playerId: held.id, added: false, late: !!held.joinedLate, conflict: true };
+    }
+    held.lastSeen = Date.now();
+    return { playerId: held.id, added: false, late: !!held.joinedLate };
+  }
 
   const seatId = id || makeId();
   if (!addSeat(game, { id: seatId, name: clean })) return null;
@@ -190,7 +220,10 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       // Sitting out the round they walked in on. Without this the table shows
       // them as having stayed, which reads as the dealer having skipped them.
       waiting: !!p.joinedLate,
-      lastSeen: p.lastSeen ?? Date.now(),
+      // Real socket presence is the relay's to report, and it doesn't yet — so
+      // every seat is projected as present rather than flickering "away" for
+      // anyone between turns. Seat-claiming reads p.lastSeen directly instead.
+      lastSeen: Date.now(),
     };
   }
 
@@ -233,6 +266,11 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
  */
 export function applyIntent(game, playerId, intent) {
   const request = game.request();
+
+  // Asking for anything proves the seat is being driven right now, which is
+  // what claimSeat leans on to spot a hijack versus a dead phone coming back.
+  const actor = game.byId(playerId);
+  if (actor) actor.lastSeen = Date.now();
 
   if (intent?.do === 'hit' || intent?.do === 'stay') {
     if (request.type !== 'move') return { ok: false, why: 'not-now' };
@@ -352,6 +390,15 @@ export function describeEvent(event, game) {
       return `${ACTIONS[event.card.action].label} discarded — nobody to use it on.`;
     case 'reshuffle':
       return 'Deck reshuffled.';
+    case 'tiebreak': {
+      // Level at the finish line: without a line for it, the game silently deals
+      // another round and looks like it forgot somebody crossed the target.
+      const names = (event.playerIds ?? []).map(who);
+      const list =
+        names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0];
+      const total = game.byId(event.playerIds?.[0])?.total ?? 0;
+      return `${list} tied at ${total} — one more round decides it.`;
+    }
     default:
       // draw/turn/defer are bookkeeping; 'gain' already reports the card.
       return null;
@@ -411,6 +458,7 @@ export function snapshot(game) {
       roundScore: p.roundScore,
       bustCard: p.bustCard,
       joinedLate: p.joinedLate,
+      lastSeen: p.lastSeen,
     })),
   };
 }
@@ -447,6 +495,7 @@ export function restore(snap) {
       roundScore: saved.roundScore,
       bustCard: saved.bustCard,
       joinedLate: saved.joinedLate,
+      lastSeen: saved.lastSeen,
     });
   });
 
