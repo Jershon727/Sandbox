@@ -1356,18 +1356,16 @@ function renderPress(state, { me, myTurn, pending, over }) {
   host.hidden = !(idle && (bet || canPress));
   if (host.hidden) return;
 
-  const label = $('press-label');
-  const chips = $('press-chips');
   if (bet) {
     host.dataset.armed = '';
     label.textContent = `Pressing ${bet.wager} — survive this card for +${bet.payout}`;
-    chips.replaceChildren();
+    chipsHost.replaceChildren();
     return;
   }
 
   delete host.dataset.armed;
   label.textContent = 'Press a bet on this card';
-  chips.replaceChildren();
+  chipsHost.replaceChildren();
   for (const wager of [5, 10, 15]) {
     const btn = document.createElement('button');
     btn.className = 'press__chip';
@@ -1383,7 +1381,7 @@ function renderPress(state, { me, myTurn, pending, over }) {
       sfx.modifier();
       store.intent({ do: 'bet', wager });
     });
-    chips.append(btn);
+    chipsHost.append(btn);
   }
 }
 
