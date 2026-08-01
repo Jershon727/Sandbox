@@ -65,6 +65,7 @@ const DEFAULT_SETUP = {
   cards: 'real', // real (physical deck, app scores) | dealt (app deals)
   bots: 1,
   botStyle: 'mixed',
+  pressBets: false, // house rule: side-bets on your own draw, dealt games only
 };
 
 export const setup = { ...DEFAULT_SETUP, ...read('setup', {}) };

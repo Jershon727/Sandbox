@@ -58,6 +58,7 @@ export function createTable({ code, setup, deal = false }) {
     target: Number(setup.target) || 200,
     seed: setup.seed,
     deal,
+    pressBets: setup.pressBets === true,
   });
   const table = { code, game, feed: [], seq: 0, lastRound: null, room: null };
   reproject(table);
@@ -95,6 +96,8 @@ export function recordEvents(table, events) {
       who: event.playerId ?? null,
       to: event.targetId ?? event.playerId ?? null,
       ...(event.score === undefined ? {} : { score: event.score }),
+      ...(event.wager === undefined ? {} : { wager: event.wager }),
+      ...(event.payout === undefined ? {} : { payout: event.payout }),
       ...(event.card ? { card: publicCard(event.card) } : {}),
     });
   }

@@ -210,6 +210,7 @@ function wireChrome() {
         // The "using this app" section depends on who is holding the cards.
         $('rules-real').hidden = store.isDealt;
         $('rules-dealt').hidden = !store.isDealt;
+        $('rules-press').hidden = !(store.isDealt && store.state?.pressBets === true);
       }
       if (which === 'menu') paintMenu();
       openModal(which);
@@ -397,6 +398,7 @@ function paintHostSetup() {
 
   $('field-bots').hidden = !dealing;
   $('field-botstyle').hidden = !dealing;
+  $('field-press').hidden = !dealing;
   $('field-mode').hidden = false;
 
   if (dealing) {
@@ -414,6 +416,24 @@ function paintHostSetup() {
       paintHostSetup();
     });
     $('host-botstyle-hint').textContent = BOT_STYLE_HINTS[setup.botStyle] ?? '';
+
+    // The Press bet house rule — off is the standard game.
+    segment(
+      $('host-press'),
+      [
+        { value: false, label: 'Off' },
+        { value: true, label: 'On' },
+      ],
+      setup.pressBets === true,
+      (v) => {
+        saveSetup({ pressBets: v });
+        paintHostSetup();
+      },
+    );
+    $('host-press-hint').textContent =
+      setup.pressBets === true
+        ? 'Before a hit, wager points that you won’t bust. The payout is set by the exact odds you take — riskier hand, bigger win.'
+        : 'A house rule: side-bets on your own draw. Off plays the standard game.';
   }
 
   segment(
@@ -551,6 +571,7 @@ async function hostGame() {
       dealt,
       bots: setup.bots,
       botStyle: setup.botStyle,
+      pressBets: dealt && setup.pressBets === true,
     });
     view.shownRound = null;
     view.shownWinner = null;
@@ -1125,6 +1146,8 @@ function renderDealt(state) {
     setHeartbeat(null);
   }
 
+  renderPress(state, { me, myTurn, pending, over });
+
   // One attribute drives every "it's on you now" cue in the CSS, so the status
   // pill, the hand and the buttons can't disagree about whose turn it is.
   $('dealt').dataset.turn = mineToTarget ? 'aim' : myTurn ? 'mine' : over ? 'over' : 'theirs';
@@ -1168,9 +1191,9 @@ function renderAim(state, mineToAim) {
   const armed = scorer.armedTargetId ? state.players?.[scorer.armedTargetId]?.name : null;
   if (armed) {
     $('aim-text').textContent = {
-      freeze: `Freeze ${armed}? Tap their name again to confirm — or tap someone else.`,
-      flip3: `Make ${armed} flip three? Tap their name again to confirm — or tap someone else.`,
-      gift: `Give ${armed} the Second Chance? Tap their name again to confirm — or tap someone else.`,
+      freeze: `Freeze ${armed}? Tap their name once more to confirm — or tap someone else.`,
+      flip3: `Make ${armed} flip three? Tap their name once more to confirm — or tap someone else.`,
+      gift: `Give ${armed} the Second Chance? Tap their name once more to confirm — or tap someone else.`,
     }[pending.action];
     return;
   }
@@ -1223,11 +1246,13 @@ function renderSpectate(state) {
     ),
   );
   const stat = $('spectate-stat');
+  // A live press is the whole table's sweat, so the strip says so.
+  const pressing = watched.bet ? ` · pressing ${watched.bet.wager}` : '';
   stat.textContent = hand.busted
     ? ''
     : hand.chance
-      ? 'shielded'
-      : `${Math.round(risk * 100)}% bust`;
+      ? `shielded${pressing}`
+      : `${Math.round(risk * 100)}% bust${pressing}`;
   stat.dataset.band = hand.busted || hand.chance ? 'safe' : riskBand(risk);
 
   // Rebuild the cards only when the hand actually changes, so the strip doesn't
@@ -1284,6 +1309,58 @@ function renderSpectate(state) {
     const killer = createCard(hand.bustCard);
     killer.classList.add('is-killer');
     cards.append(killer);
+  }
+}
+
+/**
+ * The Press bet row (house rule, host-enabled): before a hit, stake points that
+ * the next card won't bust you. Each chip shows exactly what surviving pays at
+ * the odds you're taking right now — the dealer prices the bet from the same
+ * deck count, so the preview is the contract. One press per round.
+ */
+function renderPress(state, { me, myTurn, pending, over }) {
+  const host = $('press');
+  const risk = myTurn ? bustChance(state, store.actingId) : 0;
+  const bet = me?.bet ?? null;
+  const idle =
+    state.pressBets === true &&
+    myTurn &&
+    !pending &&
+    !over &&
+    me?.state === 'active' &&
+    !me?.waiting;
+  const canPress = idle && !me.betUsed && risk > 0 && risk < 1 && (me.total ?? 0) >= 5;
+  host.hidden = !(idle && (bet || canPress));
+  if (host.hidden) return;
+
+  const label = $('press-label');
+  const chips = $('press-chips');
+  if (bet) {
+    host.dataset.armed = '';
+    label.textContent = `Pressing ${bet.wager} — survive this card for +${bet.payout}`;
+    chips.replaceChildren();
+    return;
+  }
+
+  delete host.dataset.armed;
+  label.textContent = 'Press a bet on this card';
+  chips.replaceChildren();
+  for (const wager of [5, 10, 15]) {
+    const btn = document.createElement('button');
+    btn.className = 'press__chip';
+    btn.type = 'button';
+    const payout = Math.max(1, Math.ceil((wager * risk) / (1 - risk)));
+    btn.disabled = wager > (me.total ?? 0);
+    btn.textContent = `${wager} ⇢ +${payout}`;
+    btn.setAttribute(
+      'aria-label',
+      `Press ${wager} points — pays ${payout} if the next card doesn't bust you`,
+    );
+    btn.addEventListener('click', () => {
+      sfx.modifier();
+      store.intent({ do: 'bet', wager });
+    });
+    chips.append(btn);
   }
 }
 
@@ -1555,6 +1632,17 @@ function announceWhatHappenedToMe(state) {
             : `the dealer banked ${line.score} for you`,
         ms: 1800,
       });
+    } else if (line.type === 'bet-won' && self) {
+      sfx.save();
+      buzz([15, 30, 15]);
+      showBanner(`Press pays +${line.payout}`, {
+        tone: 'save',
+        sub: `you pressed ${line.wager} and the card came good`,
+        ms: 1300,
+      });
+    } else if (line.type === 'bet-lost' && self) {
+      // The bust banner owns the screen; the lost press rides under it.
+      toast(`Your press is gone too — that's another ${line.wager}`, 2600);
     } else if (line.type === 'second-chance' && self) {
       // The shield-break beat: the duplicate hits the shield, the shield
       // shatters, and the save is quantified — the number it just kept alive.
@@ -1688,7 +1776,10 @@ async function showRoundSummary(last) {
   // The round's stories, computed from before/after totals: a lead change gets
   // named and its row pulsed gold; the biggest score coming from the bottom
   // half of the table gets called a comeback.
-  const before = results.map((r) => ({ id: r.id, total: (r.total ?? 0) - (r.delta ?? 0) }));
+  const before = results.map((r) => ({
+    id: r.id,
+    total: (r.total ?? 0) - (r.delta ?? 0) - (r.bet ?? 0),
+  }));
   const prevBest = Math.max(0, ...before.map((r) => r.total));
   const prevLeaders = new Set(
     before.filter((r) => r.total === prevBest && prevBest > 0).map((r) => r.id),
@@ -1755,6 +1846,7 @@ async function showRoundSummary(last) {
       total: r.total,
       busted: r.busted,
       lead: newLeader?.id === r.id,
+      from: (r.total ?? 0) - (r.delta ?? 0) - (r.bet ?? 0),
       note: [noteFor(r), r.id === comebackId ? 'comeback' : ''].filter(Boolean).join(' · '),
     })),
     state.target,
@@ -1811,12 +1903,18 @@ async function showWinner(state) {
 }
 
 function noteFor(result) {
-  if (result.busted) return 'busted';
-  if (result.flip7) return 'Flip 7 · +15';
+  const press = result.bet
+    ? result.bet > 0
+      ? `pressed +${result.bet}`
+      : `pressed −${-result.bet}`
+    : '';
+  if (result.busted) return ['busted', press].filter(Boolean).join(' · ');
+  if (result.flip7) return ['Flip 7 · +15', press].filter(Boolean).join(' · ');
   const bits = [];
   if (result.doubled) bits.push('×2');
   if (result.addMods?.length) bits.push(result.addMods.map((v) => `+${v}`).join(' '));
-  return bits.join(' ');
+  if (press) bits.push(press);
+  return bits.join(' · ');
 }
 
 // ── the players dialog (host) ─────────────────────────────────────────────

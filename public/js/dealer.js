@@ -19,7 +19,7 @@
 
 import { Flip7Game, Status } from './engine.js';
 import { cardName, ACTIONS } from './cards.js';
-import { decideMove, decideTarget, thinkingTime, BOT_ROSTER, STYLES } from './ai.js';
+import { decideMove, decideTarget, decideBet, thinkingTime, BOT_ROSTER, STYLES } from './ai.js';
 import { emptyTally } from './odds.js';
 import { makeId } from './room.js';
 
@@ -74,8 +74,8 @@ export function seatsFor({ hostId, hostName, bots = 1, botStyle = 'mixed' }) {
  * person in it, and everyone who then joined would have to sit out round one —
  * which looks precisely like the game refusing to deal them in.
  */
-export function createDealtGame({ seats, target = 200, seed, deal = true }) {
-  const game = new Flip7Game({ players: seats, targetScore: target, seed });
+export function createDealtGame({ seats, target = 200, seed, deal = true, pressBets = false }) {
+  const game = new Flip7Game({ players: seats, targetScore: target, seed, pressBets });
   if (deal) game.startRound();
   return game;
 }
@@ -100,6 +100,9 @@ export function addSeat(game, { id, name }) {
     status: game.phase === 'round' ? Status.STAYED : Status.ACTIVE,
     roundScore: 0,
     bustCard: null,
+    bet: null,
+    betUsed: false,
+    roundBets: 0,
     joinedLate: game.phase === 'round',
     lastSeen: Date.now(),
   });
@@ -317,6 +320,10 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       // record yet reads as present rather than flickering away before its
       // first beat.
       lastSeen: p.isBot ? now : (p.lastSeen ?? now),
+      // The Press bet house rule: a live bet is public (the whole table should
+      // sweat it), and betUsed lets the UI stop offering a second press.
+      bet: p.bet ? { wager: p.bet.wager, payout: p.bet.payout } : null,
+      betUsed: !!p.betUsed,
     };
   }
 
@@ -330,6 +337,7 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
     lobby: game.phase === 'idle',
     status: game.phase === 'game-over' ? 'finished' : 'playing',
     winnerId: game.winner?.id ?? null,
+    pressBets: !!game.pressBets,
     players,
     lastRound,
     feed,
@@ -370,6 +378,13 @@ export function applyIntent(game, playerId, intent) {
     if (request.playerId !== playerId) return { ok: false, why: 'not-your-turn' };
     if (intent.do === 'hit') game.hit();
     else game.stay();
+    return { ok: true };
+  }
+
+  if (intent?.do === 'bet') {
+    if (request.type !== 'move') return { ok: false, why: 'not-now' };
+    if (request.playerId !== playerId) return { ok: false, why: 'not-your-turn' };
+    if (!game.placeBet(playerId, intent.wager)) return { ok: false, why: 'bad-bet' };
     return { ok: true };
   }
 
@@ -452,8 +467,16 @@ export function advance(game, rng = game.rng) {
   if (request.type === 'move') {
     const player = game.byId(request.playerId);
     if (!player.isBot) return { delay: null, events: game.drain(), waitingFor: player.id };
-    if (decideMove(game, player, rng) === 'hit') game.hit();
-    else game.stay();
+    if (decideMove(game, player, rng) === 'hit') {
+      // A bot only presses a bet on a card it was going to draw anyway.
+      if (game.pressBets) {
+        const wager = decideBet(game, player, rng);
+        if (wager) game.placeBet(player.id, wager);
+      }
+      game.hit();
+    } else {
+      game.stay();
+    }
     return { delay: thinkingTime(game, player, rng), events: game.drain() };
   }
 
@@ -522,6 +545,12 @@ export function describeEvent(event, game) {
       return `${ACTIONS[event.card.action].label} discarded — nobody to use it on.`;
     case 'reshuffle':
       return 'Deck reshuffled.';
+    case 'bet':
+      return `${name} presses ${event.wager} — surviving this card pays +${event.payout}.`;
+    case 'bet-won':
+      return `${name}'s press pays out: +${event.payout}.`;
+    case 'bet-lost':
+      return `${name}'s press is gone with the hand — another ${event.wager} off the top.`;
     case 'tiebreak': {
       // Level at the finish line: without a line for it, the game silently deals
       // another round and looks like it forgot somebody crossed the target.
@@ -550,6 +579,9 @@ export function roundResults(game) {
       flip7: p.status === Status.FLIP7,
       doubled: b.doubled,
       addMods: p.modifiers.filter((c) => c.op === 'add').map((c) => c.value),
+      // Net press-bet money this round, so the summary can account for totals
+      // that moved by more (or less) than the hand in front of the player.
+      ...(p.roundBets ? { bet: p.roundBets } : {}),
     };
   });
 }
@@ -561,6 +593,7 @@ export function snapshot(game) {
     v: 1,
     seedState: game.rng.state,
     targetScore: game.targetScore,
+    pressBets: game.pressBets,
     round: game.round,
     dealerIndex: game.dealerIndex,
     turnIndex: game.turnIndex,
@@ -589,6 +622,9 @@ export function snapshot(game) {
       status: p.status,
       roundScore: p.roundScore,
       bustCard: p.bustCard,
+      bet: p.bet,
+      betUsed: p.betUsed,
+      roundBets: p.roundBets,
       joinedLate: p.joinedLate,
       lastSeen: p.lastSeen,
     })),
@@ -600,6 +636,7 @@ export function restore(snap) {
   const game = new Flip7Game({
     players: snap.players.map((p) => ({ id: p.id, name: p.name, isBot: p.isBot, style: p.style })),
     targetScore: snap.targetScore,
+    pressBets: !!snap.pressBets,
   });
 
   game.rng.setState(snap.seedState);
@@ -626,6 +663,9 @@ export function restore(snap) {
       status: saved.status,
       roundScore: saved.roundScore,
       bustCard: saved.bustCard,
+      bet: saved.bet ?? null,
+      betUsed: !!saved.betUsed,
+      roundBets: saved.roundBets ?? 0,
       joinedLate: saved.joinedLate,
       lastSeen: saved.lastSeen,
     });

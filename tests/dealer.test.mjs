@@ -23,6 +23,7 @@ import {
   STALL_MS,
 } from '../public/js/dealer.js';
 import { Status } from '../public/js/engine.js';
+import { bustChanceFor } from '../public/js/ai.js';
 
 const newGame = (opts = {}) =>
   createDealtGame({
@@ -861,4 +862,109 @@ test('a game in progress can be saved and resumed exactly', () => {
 test('a snapshot from a future version is refused rather than misread', () => {
   assert.equal(restore({ v: 99 }), null);
   assert.equal(restore(null), null);
+});
+
+// ── the Press bet house rule ──────────────────────────────────────────────
+
+const pressGame = (seed = 7) =>
+  createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 1 }),
+    target: 200,
+    seed,
+    pressBets: true,
+  });
+
+/** Put the on-turn player in a bettable spot: points to stake, a live hand. */
+function bettable(game, total = 40) {
+  dealOut(game);
+  const player = game.byId(game.request().playerId);
+  player.total = total;
+  player.numbers = [{ kind: 'number', value: 6, id: 'test-6' }];
+  player.secondChance = null;
+  return player;
+}
+
+test('a press bet is refused off-rule, off-turn, over-budget, or twice', () => {
+  const off = newGame();
+  dealOut(off);
+  const offTurn = off.request().playerId;
+  off.byId(offTurn).total = 40;
+  assert.equal(applyIntent(off, offTurn, { do: 'bet', wager: 5 }).ok, false, 'rule is off');
+
+  const game = pressGame();
+  const player = bettable(game, 20);
+  const other = game.players.find((q) => q.id !== player.id);
+  assert.deepEqual(applyIntent(game, other.id, { do: 'bet', wager: 5 }), {
+    ok: false,
+    why: 'not-your-turn',
+  });
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 25 }).ok, false, 'over budget');
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 0 }).ok, false);
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 'x' }).ok, false);
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok, true);
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok, false, 'one per round');
+});
+
+test('a shielded hand has nothing to bet on', () => {
+  const game = pressGame();
+  const player = bettable(game);
+  player.secondChance = { kind: 'action', action: 'chance', id: 'test-sc' };
+  assert.equal(game.placeBet(player.id, 5), false, 'risk is zero behind the shield');
+});
+
+test('the payout is priced at exactly the odds taken', () => {
+  const game = pressGame();
+  const player = bettable(game, 50);
+  const risk = bustChanceFor(game, player);
+  assert.ok(risk > 0 && risk < 1);
+  assert.equal(game.placeBet(player.id, 10), true);
+  assert.equal(player.bet.payout, Math.max(1, Math.ceil((10 * risk) / (1 - risk))));
+});
+
+test('a pressed bet pays on survival and is taken on a bust', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+  const payout = player.bet.payout;
+  game.deck.push({ kind: 'number', value: 3, id: 'safe-3' }); // drawn next
+  game.hit();
+  assert.equal(player.bet, null);
+  assert.equal(player.total, 40 + payout);
+  assert.equal(player.roundBets, payout);
+  assert.ok(game.drain().some((e) => e.type === 'bet-won'));
+
+  const g2 = pressGame(11);
+  const q = bettable(g2, 40);
+  g2.placeBet(q.id, 10);
+  g2.deck.push({ kind: 'number', value: 6, id: 'dup-6' }); // the duplicate
+  g2.hit();
+  assert.equal(q.status, Status.BUSTED);
+  assert.equal(q.total, 30, 'the wager comes off the top');
+  assert.equal(q.roundBets, -10);
+  assert.ok(g2.drain().some((e) => e.type === 'bet-lost'));
+});
+
+test('staying calls the bet off with nothing staked', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+  game.stay();
+  assert.equal(player.bet, null);
+  assert.equal(player.total, 40, 'nothing moves until a card does');
+});
+
+test('press state survives a snapshot and reaches the projection', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+
+  const back = restore(JSON.parse(JSON.stringify(snapshot(game))));
+  assert.equal(back.pressBets, true);
+  assert.deepEqual(back.byId(player.id).bet, player.bet);
+  assert.equal(back.byId(player.id).betUsed, true);
+
+  const room = project(game, { code: 'ABCD' });
+  assert.equal(room.pressBets, true);
+  assert.deepEqual(room.players[player.id].bet, player.bet);
+  assert.equal(room.players[player.id].betUsed, true);
 });

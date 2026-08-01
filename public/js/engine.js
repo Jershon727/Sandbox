@@ -15,6 +15,7 @@
 import { makeRng } from './rng.js';
 import { buildDeck } from './cards.js';
 import { scoreHand, FLIP7_BONUS, FLIP7_TARGET } from './scoring.js';
+import { tallyOf, bustChanceOf } from './odds.js';
 
 export const Status = {
   ACTIVE: 'active',
@@ -30,9 +31,12 @@ export { FLIP7_BONUS, FLIP7_TARGET };
 export const isOut = (p) => p.status !== Status.ACTIVE;
 
 export class Flip7Game {
-  constructor({ players, targetScore = 200, seed } = {}) {
+  constructor({ players, targetScore = 200, seed, pressBets = false } = {}) {
     this.rng = makeRng(seed);
     this.targetScore = targetScore;
+    // House rule: before a hit, a player may wager points that the next card
+    // won't bust them. Off by default — the host turns it on.
+    this.pressBets = !!pressBets;
     this.players = players.map((p, i) => ({
       id: p.id ?? `p${i}`,
       name: p.name ?? `Player ${i + 1}`,
@@ -48,6 +52,9 @@ export class Flip7Game {
       status: Status.ACTIVE,
       roundScore: 0,
       bustCard: null,
+      bet: null, // a live press bet: { wager, payout }
+      betUsed: false, // one press per round
+      roundBets: 0, // net press winnings this round, for the summary
     }));
 
     this.round = 0;
@@ -112,6 +119,9 @@ export class Flip7Game {
       p.status = Status.ACTIVE;
       p.roundScore = 0;
       p.bustCard = null;
+      p.bet = null;
+      p.betUsed = false;
+      p.roundBets = 0;
     }
 
     // A freshly shuffled deck each round keeps the odds readable for players
@@ -206,6 +216,8 @@ export class Flip7Game {
     const player = this.current;
     this.emit('hit', { playerId: player.id });
     this._deal(player, 'hit');
+    // The pressed bet rides on exactly this card, whatever it turned out to be.
+    this._settleBet(player);
     this.needAdvance = true;
     return true;
   }
@@ -214,11 +226,63 @@ export class Flip7Game {
     const req = this.request();
     if (req.type !== 'move') return false;
     const player = this.current;
+    // Banking instead of drawing calls the bet off — nothing was ever staked
+    // until a card actually moves.
+    player.bet = null;
     player.status = Status.STAYED;
     player.roundScore = this.scoreOf(player);
     this.emit('stay', { playerId: player.id, score: player.roundScore });
     this.needAdvance = true;
     return true;
+  }
+
+  /**
+   * The Press bet house rule: before hitting, wager that the next card won't
+   * bust you. The payout is set at the odds you took — wager × p/(1−p), the
+   * exact bust chance from the exact remaining deck — so the bet is fair by
+   * construction: pressing is pure nerve, not a strategy that always pays.
+   * One press per round; you can't stake points you don't have.
+   */
+  placeBet(playerId, wager) {
+    if (!this.pressBets) return false;
+    const req = this.request();
+    if (req.type !== 'move' || req.playerId !== playerId) return false;
+    const player = this.byId(playerId);
+    const amount = Math.floor(Number(wager));
+    if (!Number.isFinite(amount) || amount < 1) return false;
+    if (player.betUsed || player.bet) return false;
+    if (amount > player.total) return false;
+
+    const risk = bustChanceOf(tallyOf(this.deck), {
+      numbers: player.numbers.map((c) => c.value),
+      doubled: player.modifiers.some((c) => c.op === 'mul'),
+      chance: !!player.secondChance,
+      busted: false,
+      standing: this.scoreOf(player),
+    });
+    // A hand that can't bust has nothing to bet on, and a certainty pays nothing.
+    if (risk <= 0 || risk >= 1) return false;
+
+    const payout = Math.max(1, Math.ceil((amount * risk) / (1 - risk)));
+    player.bet = { wager: amount, payout };
+    player.betUsed = true;
+    this.emit('bet', { playerId, wager: amount, payout, risk });
+    return true;
+  }
+
+  _settleBet(player) {
+    const bet = player.bet;
+    if (!bet) return;
+    player.bet = null;
+    if (player.status === Status.BUSTED) {
+      player.total = Math.max(0, player.total - bet.wager);
+      player.roundBets -= bet.wager;
+      this.emit('bet-lost', { playerId: player.id, wager: bet.wager });
+    } else {
+      player.total += bet.payout;
+      player.roundBets += bet.payout;
+      this.emit('bet-won', { playerId: player.id, payout: bet.payout, wager: bet.wager });
+    }
   }
 
   /** Resolve the action card currently awaiting a target. */

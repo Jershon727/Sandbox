@@ -213,7 +213,15 @@ export class Store {
     return !!this.actingId && this.state?.turnId === this.actingId;
   }
 
-  async host({ name, target = 200, mode = 'local', dealt = false, bots = 1, botStyle = 'mixed' }) {
+  async host({
+    name,
+    target = 200,
+    mode = 'local',
+    dealt = false,
+    bots = 1,
+    botStyle = 'mixed',
+    pressBets = false,
+  }) {
     const sync = await this._backend(mode);
     if (dealt && !sync.intent) {
       throw Object.assign(new Error('A dealt game needs the relay'), { code: 'needs-relay' });
@@ -229,7 +237,7 @@ export class Store {
         room = dealt
           ? await sync.create(code, null, {
               kind: 'dealt',
-              setup: { hostId, hostName: name, target, bots, botStyle },
+              setup: { hostId, hostName: name, target, bots, botStyle, pressBets },
             })
           : await sync.create(code, blankRoom({ code, target, hostId, hostName: name }));
       } catch (err) {

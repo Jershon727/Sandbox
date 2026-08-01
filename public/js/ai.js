@@ -143,6 +143,24 @@ export function decideTarget(game, player, request, rng) {
   return ranked[0].id;
 }
 
+/**
+ * Whether a bot presses a Press bet on the card it is about to draw, and for
+ * how much. The bet is fair by construction (the engine sets the payout at the
+ * odds), so pressing is pure variance — which is exactly why only a wild bot
+ * that's behind wants it, and a front-runner never does.
+ */
+export function decideBet(game, player, rng) {
+  if (styleOf(player).key !== 'reckless') return 0;
+  if (player.betUsed || player.bet || player.secondChance) return 0;
+  if ((player.total ?? 0) < 10) return 0;
+  const leader = Math.max(...game.players.map((q) => q.total));
+  if (player.total >= leader) return 0;
+  const risk = bustChanceFor(game, player);
+  // Sweaty but not suicidal: press only where the payout is worth watching.
+  if (risk < 0.2 || risk > 0.6) return 0;
+  return (rng ? rng.next() : Math.random()) < 0.4 ? 10 : 0;
+}
+
 /** A little variance so bots don't all answer on the same beat. */
 export function thinkingTime(game, player, rng) {
   const r = rng ? rng.next() : Math.random();

@@ -173,8 +173,9 @@ export function fillScores(host, rows, target, { countUp = false, stagger = fals
     const total = document.createElement('span');
     total.className = 'row__total';
     // Counting the total up from where it stood makes the round's damage
-    // legible as movement, not just a bigger number.
-    const from = row.total - (row.delta ?? 0);
+    // legible as movement, not just a bigger number. `from` can be given
+    // outright when the total moved by more than the hand (press bets).
+    const from = row.from ?? row.total - (row.delta ?? 0);
     if (countUp && !still && row.delta > 0) {
       total.textContent = String(from);
       tweenText(total, from, row.total, 700);

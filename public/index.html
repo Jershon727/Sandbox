@@ -175,6 +175,12 @@
             <p class="field__hint" id="host-botstyle-hint"></p>
           </div>
 
+          <div class="field" id="field-press" hidden>
+            <span class="field__label">Press bets</span>
+            <div class="seg" id="host-press" role="radiogroup" aria-label="Press bets house rule"></div>
+            <p class="field__hint" id="host-press-hint"></p>
+          </div>
+
           <div class="field" id="field-mode">
             <span class="field__label">Everyone scores on</span>
             <div class="seg" id="host-mode" role="radiogroup" aria-label="How to keep score"></div>
@@ -335,6 +341,13 @@
             <p class="aim__text" id="aim-text"></p>
           </div>
 
+          <!-- The Press bet house rule: wager points that the next card won't
+               bust you, at a payout set by the exact odds you're taking. -->
+          <div class="press" id="press" hidden>
+            <span class="press__label" id="press-label">Press a bet</span>
+            <div class="press__chips" id="press-chips"></div>
+          </div>
+
           <p class="dealt__status" id="dealt-status">Dealing…</p>
 
           <!-- The table is stuck behind a phone that went quiet. The dealer
@@ -469,6 +482,12 @@
               Draw a Freeze or Flip Three and you aim it yourself: tap a name on the scoreboard,
               then tap it again to confirm. The Bust-O-meter below your hand counts the exact
               remaining deck.
+            </p>
+            <p class="prose__note" id="rules-press" hidden>
+              <b>Press bets</b> (house rule, on in this game) — before a hit, wager 5, 10 or 15
+              points that the card won't bust you. Bust and the wager comes off your total;
+              survive and it pays out at the exact odds you took, priced from the remaining deck.
+              One press per round.
             </p>
           </div>
 
