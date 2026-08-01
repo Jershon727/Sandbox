@@ -329,8 +329,12 @@ function segment(host, options, current, onPick) {
 
 function buildHostSetup() {
   const name = $('host-name');
-  name.value = setup.name === 'You' ? '' : setup.name;
-  name.addEventListener('input', () => saveSetup({ name: name.value }));
+  // 'You' and 'Me' were old placeholder fallbacks; never resurrect them.
+  name.value = ['You', 'Me'].includes(setup.name) ? '' : setup.name;
+  name.addEventListener('input', () => {
+    $('host-error').textContent = '';
+    saveSetup({ name: name.value });
+  });
 }
 
 const BOT_STYLE_OPTIONS = [
@@ -525,7 +529,16 @@ function busy(button, on, label) {
 
 async function hostGame() {
   const btn = $('btn-host');
-  const name = ($('host-name').value || 'Me').trim().slice(0, 14);
+  // No silent fallback name: a seat labelled "Me" with a "you" badge next to it
+  // reads as a bug, and everyone else at the table sees "Me" too. The name you
+  // type is remembered, so this is a one-time ask per device.
+  const name = $('host-name').value.trim().slice(0, 14);
+  if (!name) {
+    sfx.error();
+    $('host-error').textContent = 'What should the table call you?';
+    $('host-name').focus();
+    return;
+  }
   saveSetup({ name });
   busy(btn, true, 'Creating…');
   try {
