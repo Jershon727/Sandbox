@@ -5,6 +5,7 @@
  */
 
 import { speedFactor } from './storage.js';
+import { monogram } from './avatar.js';
 
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms * speedFactor()));
 
@@ -113,15 +114,10 @@ export function announce(text) {
   if (el) el.textContent = text;
 }
 
-export function setStatus(text) {
-  const el = document.getElementById('felt-status');
-  if (el) el.textContent = text;
-}
-
 // ── scoreboards ───────────────────────────────────────────────────────────
 
 /**
- * @param {object[]} rows  { name, avatar, delta, total, note, busted, winner }
+ * @param {object[]} rows  { name, seat, delta, total, note, busted, winner }
  * @param {number} target  used to draw the race-to-target progress bar
  */
 export function fillScores(host, rows, target) {
@@ -136,7 +132,8 @@ export function fillScores(host, rows, target) {
 
     const rank = document.createElement('span');
     rank.className = 'row__rank';
-    rank.textContent = row.avatar ?? `${i + 1}`;
+    if (row.seat != null) rank.append(monogram(row.name, row.seat));
+    else rank.textContent = `${i + 1}`;
 
     const name = document.createElement('span');
     name.className = 'row__name';

@@ -13,13 +13,26 @@
 
 /* ── 1. Tokens & themes ─────────────────────────────────────────────────── */
 
+/* Self-hosted so the app opens with its own face on bad wifi — the same
+   kitchen-table constraint the service worker exists for. One variable-weight
+   file covers every weight the app uses. */
+@font-face {
+  font-family: 'Outfit';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../fonts/outfit-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
+    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
 :root {
   /* number card ramp — cool at the bottom of the deck, hot at the top */
   --n0: #94a3c4;
   --n1: #4dd0e1;
-  --n2: #45b8ff;
+  --n2: #3d9bff;
   --n3: #7b8cff;
-  --n4: #a97bff;
+  --n4: #b46cff;
   --n5: #e072f5;
   --n6: #ff6fae;
   --n7: #ff5a5a;
@@ -84,18 +97,26 @@
   --ink: #191436;
   --ink-2: #4c4670;
   --ink-3: #7d77a0;
-  --surface: rgba(25, 20, 54, 0.045);
-  --surface-2: rgba(25, 20, 54, 0.08);
+  --surface: rgba(25, 20, 54, 0.07);
+  --surface-2: rgba(25, 20, 54, 0.11);
   --surface-solid: #fff;
-  --line: rgba(25, 20, 54, 0.11);
-  --line-2: rgba(25, 20, 54, 0.2);
+  --line: rgba(25, 20, 54, 0.16);
+  --line-2: rgba(25, 20, 54, 0.26);
   --shade: rgba(255, 255, 255, 0.72);
   --card-ink: #fff;
   --card-mix: #2a1f52;
-  --card-mix-amt: 34%;
+  --card-mix-amt: 45%;
   --scrim: rgba(30, 24, 60, 0.42);
   --logo-a: #2b1f5c;
   --logo-b: #6f5bd6;
+}
+
+/* Light surfaces are near-white on near-white, so a soft drop shadow does the
+   separating that the dark theme's contrast does for free. */
+[data-theme='light'] .stand,
+[data-theme='light'] .tally__card,
+[data-theme='light'] .mode {
+  box-shadow: 0 6px 16px -10px rgba(25, 20, 54, 0.35);
 }
 
 /* ── 2. Reset & base ───────────────────────────────────────────────────── */
@@ -249,6 +270,7 @@ input {
     color-mix(in oklab, var(--c) calc(100% - var(--card-mix-amt)), var(--card-mix)) 100%
   );
   box-shadow:
+    0 0 0 1.5px rgba(255, 255, 255, 0.35) inset,
     0 1px 0 rgba(255, 255, 255, 0.32) inset,
     0 -10px 18px -8px rgba(0, 0, 0, 0.45) inset,
     0 6px 14px -6px rgba(0, 0, 0, 0.6);
@@ -264,6 +286,40 @@ input {
   inset: 0;
   background: linear-gradient(150deg, rgba(255, 255, 255, 0.3) 0%, transparent 42%);
   pointer-events: none;
+}
+
+/* The card back, shown for the first half of the deal-in flip so a dealt card
+   arrives face down and turns over, rather than materialising face up. */
+.card::before {
+  content: '7';
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  background: var(--surface-solid);
+  box-shadow: 0 0 0 1.5px var(--line-2) inset;
+  color: var(--ink-3);
+  font-size: calc(var(--cw, 54px) * 0.44);
+  font-weight: 900;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.card.is-new::before {
+  animation: backReveal calc(0.44s * var(--speed)) linear both;
+}
+
+@keyframes backReveal {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
 }
 
 .card__value {
@@ -282,8 +338,36 @@ input {
   font-size: calc(var(--cw, 54px) * 0.48);
 }
 
+/* small corner index, like a real playing card */
+.card__corner {
+  position: absolute;
+  top: 6%;
+  left: 9%;
+  z-index: 1;
+  font-size: calc(var(--cw, 54px) * 0.17);
+  font-weight: 800;
+  line-height: 1;
+  opacity: 0.85;
+  font-variant-numeric: tabular-nums;
+}
+
 .card[data-kind='modifier'] {
   --c: var(--gold);
+}
+
+/* The hot end of the ramp and the gold modifiers are too light for white ink
+   (~1.5-1.7:1); these faces take a dark ink instead, ≥3:1 at every point of
+   the face gradient in both themes. */
+.card[data-value='9'],
+.card[data-value='10'],
+.card[data-kind='modifier'] {
+  --card-ink: #241a00;
+}
+
+.card[data-value='9'] .card__value,
+.card[data-value='10'] .card__value,
+.card[data-kind='modifier'] .card__value {
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .card[data-kind='modifier'] .card__value {
@@ -312,7 +396,8 @@ input {
   position: absolute;
   bottom: 6%;
   z-index: 1;
-  font-size: calc(var(--cw, 54px) * 0.15);
+  /* the floor keeps the label legible on the smallest cards */
+  font-size: max(9px, calc(var(--cw, 54px) * 0.15));
   font-weight: 800;
   letter-spacing: 0.02em;
   text-transform: uppercase;
@@ -503,6 +588,7 @@ input {
   flex: 1;
   min-height: 42px;
   padding: 8px 4px;
+  border: 1px solid transparent;
   border-radius: 11px;
   font-weight: 800;
   font-size: 0.94rem;
@@ -513,8 +599,9 @@ input {
 }
 
 .seg__opt[aria-checked='true'] {
-  background: var(--surface-2);
+  background: color-mix(in oklab, var(--volt) 22%, transparent);
   color: var(--ink);
+  border: 1px solid color-mix(in oklab, var(--volt) 45%, transparent);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14) inset;
 }
 
@@ -537,7 +624,7 @@ input {
   margin-top: 7px;
   font-size: 0.84rem;
   color: var(--ink-3);
-  font-weight: 600;
+  font-weight: 500;
   min-height: 1.2em;
 }
 
@@ -551,7 +638,7 @@ input {
 .sheet__lede {
   margin-bottom: 20px;
   color: var(--ink-2);
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.5;
 }
 
@@ -606,7 +693,7 @@ input {
 
 .logo__tag {
   margin-top: 14px;
-  font-weight: 700;
+  font-weight: 500;
   font-size: 1.02rem;
   line-height: 1.4;
   color: var(--ink-3);
@@ -677,25 +764,6 @@ input {
   z-index: 1;
 }
 
-.mode__art--pad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-template-rows: repeat(2, 1fr);
-  gap: 4px;
-  padding: 3px;
-}
-
-.mode__pip {
-  display: grid;
-  place-items: center;
-  border-radius: 6px;
-  background: var(--surface-2);
-  font-size: 0.62rem;
-  font-weight: 800;
-  font-style: normal;
-  color: var(--ink-2);
-}
-
 .mode__body {
   flex: 1;
   display: block;
@@ -712,7 +780,7 @@ input {
   display: block;
   margin-top: 2px;
   font-size: 0.86rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink-3);
   line-height: 1.35;
 }
@@ -732,42 +800,19 @@ input {
 
 /* ── 6. Game table ─────────────────────────────────────────────────────── */
 
-.topbar--game {
-  margin-bottom: 8px;
-}
-
-.hud {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: var(--ink-3);
-}
-
-.hud b {
-  color: var(--ink);
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-
-.hud__sep {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.5;
-}
-
-/* full-bleed announcements */
+/* Full-bleed announcements. Flex column, not a grid: the banner can carry the
+   card that caused it above the words ("you were frozen" is easier to accept
+   when the Freeze is sitting there), and two grid rows across a full-screen
+   overlay would push the card and its caption to opposite ends of the phone. */
 .banner {
   position: absolute;
   inset: 0;
   z-index: 40;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   pointer-events: none;
   opacity: 0;
 }
@@ -823,19 +868,6 @@ input {
 .banner[data-tone='save'] .banner__text {
   color: var(--mint);
   border-color: color-mix(in oklab, var(--mint) 55%, transparent);
-}
-
-/* The card that caused the announcement, above the words. "You were frozen" is
-   easier to accept when the Freeze is sitting there.
-
-   Flex, not the base grid: two grid rows across a full-screen overlay would push
-   the card and its caption to opposite ends of the phone. */
-.banner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
 }
 
 .banner__card {
@@ -894,7 +926,7 @@ input {
 }
 
 .roomchip__meta {
-  font-size: 0.66rem;
+  font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -944,6 +976,36 @@ input {
   );
 }
 
+/* Five or more players: tighter single-line rows, so a full table shows more
+   than a couple of names before it has to scroll. The per-row progress hairline
+   goes — at this density it reads as noise — and the list keeps more height. */
+.standings.is-compact {
+  min-height: 132px;
+  gap: 4px;
+}
+
+.standings.is-compact .stand {
+  padding: 4px 10px;
+  border-radius: 11px;
+}
+
+.standings.is-compact .stand__bar {
+  display: none;
+}
+
+.standings.is-compact .stand__name {
+  font-size: 0.88rem;
+}
+
+.standings.is-compact .stand__total {
+  font-size: 1.02rem;
+}
+
+.standings.is-compact .monogram {
+  width: 17px;
+  height: 17px;
+}
+
 .stand {
   position: relative;
   display: grid;
@@ -977,6 +1039,34 @@ input {
 .stand.is-flip7 {
   border-color: var(--gold);
   background: color-mix(in oklab, var(--gold) 11%, transparent);
+}
+
+/* who this row is, at a glance — the initial on a seat-coloured circle */
+.monogram {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.6875rem;
+  font-weight: 900;
+  line-height: 1;
+  color: #fff;
+  background: linear-gradient(
+    158deg,
+    var(--c, var(--n0)),
+    color-mix(in oklab, var(--c, var(--n0)) 60%, var(--card-mix))
+  );
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.25) inset;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* the light seats take the same dark ink as the light card faces */
+.monogram[data-seat='9'],
+.monogram[data-seat='10'] {
+  color: #241a00;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .stand__rank {
@@ -1015,7 +1105,7 @@ input {
   border-radius: 999px;
   background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 0.56rem;
+  font-size: 0.6875rem;
   font-weight: 900;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -1096,7 +1186,7 @@ input {
   background: color-mix(in oklab, var(--volt) 13%, transparent);
   border: 1px solid color-mix(in oklab, var(--volt) 34%, transparent);
   font-size: 0.86rem;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1.4;
   color: var(--ink-2);
 }
@@ -1125,7 +1215,7 @@ input {
   align-self: center;
   text-align: center;
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--ink-3);
 }
 
@@ -1221,7 +1311,7 @@ input {
 
 .hand__empty {
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink-3);
 }
 
@@ -1288,7 +1378,7 @@ input {
 .readout__formula {
   flex: 1;
   font-size: 0.84rem;
-  font-weight: 700;
+  font-weight: 500;
   color: var(--ink-2);
   line-height: 1.3;
   overflow-wrap: anywhere;
@@ -1341,6 +1431,14 @@ input {
 .pad__key--mod {
   --c: var(--gold);
   font-size: 0.92rem;
+}
+
+/* the same faces as the cards, so the same dark ink on the light ones */
+.pad__key[data-value='9'],
+.pad__key[data-value='10'],
+.pad__key--mod {
+  color: #241a00;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
 .pad__key--wide {
@@ -1497,12 +1595,21 @@ input {
 .meter__top {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 8px;
 }
 
+/* the band, said in a word as well as a colour */
+.meter__band {
+  margin-left: auto;
+  font-size: 0.6875rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
 .meter__label {
-  font-size: 0.62rem;
+  font-size: 0.6875rem;
   font-weight: 900;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -1592,7 +1699,7 @@ input {
 }
 
 .advice__says small {
-  font-size: 0.58rem;
+  font-size: 0.6875rem;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1631,7 +1738,7 @@ input {
 .advice__why {
   padding: 2px 2px 0;
   font-size: 0.82rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.45;
   color: var(--ink-2);
   animation: slideUp 0.22s var(--ease-out) both;
@@ -1659,7 +1766,7 @@ input {
   flex-direction: column;
   gap: 1px;
   font-size: 0.78rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.35;
   color: var(--ink-3);
 }
@@ -1675,7 +1782,7 @@ input {
 /* the newest line is the one you're reading */
 .feed__line:last-child {
   color: var(--ink);
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .feed__line[data-tone='bust'] {
@@ -1695,7 +1802,7 @@ input {
 /* what happened to you, findable without reading every name */
 .feed__line[data-me] {
   color: var(--ink);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .feed__line[data-me]::before {
@@ -1705,7 +1812,7 @@ input {
   height: 4px;
   margin: 0 5px 1px 0;
   border-radius: 50%;
-  background: var(--volt);
+  background: var(--seat-c, var(--volt));
   vertical-align: middle;
 }
 
@@ -1854,7 +1961,7 @@ input {
   border-radius: 999px;
   background: var(--gold);
   color: #2a1a00;
-  font-size: 0.56rem;
+  font-size: 0.6875rem;
   font-weight: 900;
 }
 
@@ -1904,7 +2011,7 @@ input {
 .aim__text {
   margin: 0;
   font-size: 0.82rem;
-  font-weight: 700;
+  font-weight: 500;
   line-height: 1.3;
   color: var(--ink);
 }
@@ -1931,7 +2038,7 @@ input {
   position: relative;
   display: flex;
   flex: none;
-  padding-bottom: 9px;
+  padding-bottom: 12px;
   animation: killerIn 0.45s var(--pop) both;
 }
 
@@ -1944,7 +2051,7 @@ input {
   border-radius: 999px;
   background: var(--hot);
   color: #fff;
-  font-size: 0.5rem;
+  font-size: 0.6875rem;
   font-weight: 900;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -2112,7 +2219,7 @@ input {
   border-radius: 13px;
   background: var(--surface);
   font-size: 0.84rem;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.45;
   color: var(--ink-3);
 }
@@ -2198,7 +2305,7 @@ input {
 .modal__lede {
   text-align: center;
   color: var(--ink-2);
-  font-weight: 600;
+  font-weight: 500;
   margin: -8px 0 16px;
 }
 
@@ -2301,7 +2408,7 @@ input {
 }
 
 .prose {
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.55;
   color: var(--ink-2);
 }
@@ -2408,7 +2515,7 @@ input {
 .opt__label small {
   display: block;
   font-size: 0.76rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--ink-3);
 }
 
@@ -2455,39 +2562,6 @@ input {
 .opt .seg__opt {
   font-size: 0.8rem;
   min-height: 34px;
-}
-
-.stats {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 8px;
-}
-
-.stat {
-  padding: 13px;
-  border-radius: 15px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  text-align: center;
-}
-
-.stat__value {
-  display: block;
-  font-size: 1.7rem;
-  font-weight: 900;
-  letter-spacing: -0.04em;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-}
-
-.stat__label {
-  display: block;
-  margin-top: 1px;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink-3);
 }
 
 /* Toasts drop from the top: every screen keeps its controls at the bottom, and
@@ -2634,6 +2708,59 @@ input {
   animation: countPop 0.3s var(--pop);
 }
 
+/* ── hover ───────────────────────────────────────────────────────────────── */
+
+/* Touch-first, but under a cursor the interactive things should answer back.
+   Gated on a real hover so touch screens never get sticky hover states. */
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    filter: brightness(1.07);
+  }
+
+  .pad__key:hover {
+    transform: translateY(-1px);
+    filter: brightness(1.12);
+  }
+
+  .pad__key.is-held:hover {
+    transform: none;
+    filter: grayscale(0.55) brightness(0.8);
+  }
+
+  .mode:hover {
+    transform: translateY(-2px);
+    border-color: var(--line-2);
+  }
+
+  .icon-btn:hover,
+  .link:hover {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+
+  .seg__opt:hover:not([aria-checked='true']) {
+    background: var(--surface-2);
+    color: var(--ink);
+  }
+
+  .stand:hover {
+    border-color: var(--line-2);
+  }
+
+  .roomchip:hover {
+    border-color: var(--line-2);
+  }
+
+  .advice__row:hover {
+    background: var(--surface);
+  }
+
+  .card[role='button']:hover {
+    filter: brightness(1.08);
+  }
+}
+
 /* ── landscape / larger screens ────────────────────────────────────────── */
 
 @media (min-width: 520px) {
@@ -2643,9 +2770,6 @@ input {
   .pad__key {
     min-height: 54px;
     font-size: 1.15rem;
-  }
-  .pod .card {
-    --cw: 22px;
   }
 }
 
@@ -2664,6 +2788,70 @@ input {
   }
   .btn--xl {
     min-height: 52px;
+  }
+}
+
+/* Desktop: the phone column leaves most of the window empty, so the room splits
+   in two — the table on the left, your hand and the controls on the right. The
+   setup screens keep the single centred column. */
+@media (min-width: 900px) {
+  .app {
+    max-width: 1060px;
+  }
+
+  .screen {
+    max-width: 720px;
+    margin-inline: auto;
+  }
+
+  .screen[data-screen='room'] {
+    max-width: none;
+  }
+
+  .screen[data-screen='room'].is-active {
+    display: grid;
+    grid-template-columns: minmax(320px, 5fr) minmax(0, 6fr);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    column-gap: 26px;
+    align-content: stretch;
+  }
+
+  .topbar--room {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .standings {
+    grid-column: 1;
+    grid-row: 2 / span 2;
+    align-content: start;
+  }
+
+  .roomhint {
+    grid-column: 1;
+    grid-row: 4;
+    align-self: end;
+    margin-top: 0;
+  }
+
+  .tally__card,
+  [data-mode='dealt'] .tally__card {
+    grid-column: 2;
+    grid-row: 2;
+    align-self: start;
+    margin-block: 0;
+  }
+
+  .pad,
+  .dealt {
+    grid-column: 2;
+    grid-row: 3;
+    align-self: end;
+  }
+
+  .tally__foot {
+    grid-column: 2;
+    grid-row: 4;
   }
 }
 

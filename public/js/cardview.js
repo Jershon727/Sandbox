@@ -15,7 +15,7 @@ export function createCard(card) {
     el.dataset.value = String(card.value);
     el.style.setProperty('--c', `var(--n${card.value})`);
     if (card.value >= 10) el.dataset.wide = '';
-    el.append(value(String(card.value)));
+    el.append(corner(String(card.value)), value(String(card.value)));
     el.setAttribute('aria-label', `${card.value}`);
     return el;
   }
@@ -38,6 +38,15 @@ export function createCard(card) {
 function value(text) {
   const span = document.createElement('span');
   span.className = 'card__value';
+  span.textContent = text;
+  return span;
+}
+
+/* small top-left index, like a real playing card */
+function corner(text) {
+  const span = document.createElement('span');
+  span.className = 'card__corner';
+  span.setAttribute('aria-hidden', 'true');
   span.textContent = text;
   return span;
 }

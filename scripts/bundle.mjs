@@ -30,6 +30,7 @@ const MODULES = [
   'dealer.js',
   'table.js',
   'storage.js',
+  'avatar.js',
   'views.js',
   'sound.js',
   'fx.js',

@@ -9,6 +9,7 @@
 
 import { scoreHand, formula, FLIP7_TARGET } from './scoring.js';
 import { createCard, dealFrom, renderPips } from './cardview.js';
+import { monogram } from './avatar.js';
 import {
   emptyHand,
   handShape,
@@ -66,6 +67,7 @@ export class Scorer {
       adviceRow: id('advice-row'),
       adviceNeedle: id('advice-needle'),
       advicePct: id('advice-pct'),
+      adviceBand: id('advice-band'),
       adviceRec: id('advice-rec'),
       adviceWhy: id('advice-why'),
       adviceReason: id('advice-reason'),
@@ -170,6 +172,7 @@ export class Scorer {
       const key = document.createElement('button');
       key.className = 'pad__key';
       key.type = 'button';
+      key.dataset.value = String(v);
       key.style.setProperty('--c', `var(--n${v})`);
       key.textContent = String(v);
       key.setAttribute('aria-label', `Add a ${v}`);
@@ -406,6 +409,9 @@ export class Scorer {
     el.advice.hidden = false;
     el.advice.dataset.band = a.band;
     el.advice.dataset.move = a.move;
+    // The band in a word too, so the colour is never the only signal.
+    el.adviceBand.textContent =
+      { safe: 'safe', ok: 'okay', warm: 'risky', hot: 'danger' }[a.band] ?? '';
 
     const pct = Math.round(a.risk * 100);
     // The needle slides via CSS; the number is tweened to match it.
@@ -475,6 +481,9 @@ export class Scorer {
     const leader = rows.length ? rows[0].total ?? 0 : 0;
     const selectedId = this.target?.id ?? this.store.actingId;
 
+    // Five or more rows switch the list to its denser single-line form.
+    host.classList.toggle('is-compact', rows.length > 4);
+
     host.replaceChildren();
     rows.forEach((p, i) => {
       const shape = handShape(p.hand);
@@ -504,7 +513,7 @@ export class Scorer {
 
       const name = document.createElement('span');
       name.className = 'stand__name';
-      name.append(document.createTextNode(p.name));
+      name.append(monogram(p.name, p.order ?? i), document.createTextNode(p.name));
 
       const tags = document.createElement('span');
       tags.className = 'stand__tags';

@@ -39,6 +39,7 @@ import {
 import { sfx, setSoundEnabled, unlockSound } from './sound.js';
 import { initFx, setFxEnabled, celebrate } from './fx.js';
 import { createCard } from './cardview.js';
+import { seatColor } from './avatar.js';
 import { ACTIONS, cardName } from './cards.js';
 
 const $ = (id) => document.getElementById(id);
@@ -725,7 +726,7 @@ function renderDealt(state) {
     over,
     waiting: !!me?.waiting,
   });
-  renderFeed(state.feed ?? []);
+  renderFeed(state.feed ?? [], state.players ?? {});
   announceTurn(state, { myTurn, mineToAim: mineToTarget, pending });
   announceSittingOut(state, me);
   announceWhatHappenedToMe(state);
@@ -937,7 +938,7 @@ function announceWhatHappenedToMe(state) {
  * A running account of the round. Bot turns take about a second each, so without
  * this the round appears to end without anyone else playing.
  */
-function renderFeed(feed) {
+function renderFeed(feed, players) {
   const host = $('feed');
   const seen = new Set();
 
@@ -958,6 +959,9 @@ function renderFeed(feed) {
     // Lines about you are the ones you'd scroll back for, so they don't have to
     // be found by reading names.
     if (line.who === store.actingId || line.to === store.actingId) el.dataset.me = '';
+    // The marker dot borrows the actor's seat colour, matching their monogram.
+    const actor = players[line.who];
+    if (actor) el.style.setProperty('--seat-c', seatColor(actor.order ?? 0));
     el.textContent = line.text;
     host.append(el);
   }
@@ -1037,6 +1041,7 @@ function showRoundSummary(last) {
     $('round-scores'),
     (last.results ?? []).map((r) => ({
       name: r.name,
+      seat: state.players?.[r.id]?.order,
       delta: r.delta,
       total: r.total,
       busted: r.busted,
@@ -1062,6 +1067,7 @@ function showWinner(state) {
     $('over-scores'),
     standings(state).map((p) => ({
       name: p.name,
+      seat: p.order,
       delta: p.history?.at(-1) ?? 0,
       total: p.total ?? 0,
       winner: p.id === state.winnerId,
