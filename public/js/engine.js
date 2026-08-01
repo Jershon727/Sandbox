@@ -27,6 +27,10 @@ export const Status = {
 
 export { FLIP7_BONUS, FLIP7_TARGET };
 
+/** The railbird bet: flat stakes, one per round, for players out of the round. */
+export const RAIL_STAKE = 5;
+export const RAIL_WIN = 10;
+
 /** A player is done for the round unless they're active. */
 export const isOut = (p) => p.status !== Status.ACTIVE;
 
@@ -54,6 +58,7 @@ export class Flip7Game {
       bustCard: null,
       bet: null, // a live press bet: { wager, payout }
       betUsed: false, // one press per round
+      railbird: null, // out of the round, backing a horse: { targetId, stake, payout }
       roundBets: 0, // net press winnings this round, for the summary
     }));
 
@@ -121,6 +126,7 @@ export class Flip7Game {
       p.bustCard = null;
       p.bet = null;
       p.betUsed = false;
+      p.railbird = null;
       p.roundBets = 0;
     }
 
@@ -268,6 +274,49 @@ export class Flip7Game {
     player.betUsed = true;
     this.emit('bet', { playerId, wager: amount, payout, risk });
     return true;
+  }
+
+  /**
+   * The railbird bet: once you're out of the round — busted or frozen — you
+   * can put a flat 5 on somebody still playing to post the round's best score.
+   * Pays 10 if your horse comes in, gone if not. Flat stakes on purpose: this
+   * is a heckling mechanic for dead players, not a second economy. One per
+   * round, and you can't stake points you don't have.
+   */
+  placeRailbird(playerId, targetId) {
+    if (!this.pressBets || this.phase !== 'round') return false;
+    const player = this.byId(playerId);
+    const horse = this.byId(targetId);
+    if (!player || !horse || player === horse) return false;
+    if (player.status !== Status.BUSTED && player.status !== Status.FROZEN) return false;
+    if (player.railbird) return false;
+    if (player.total < RAIL_STAKE) return false;
+    if (horse.status !== Status.ACTIVE) return false;
+
+    player.railbird = { targetId, stake: RAIL_STAKE, payout: RAIL_WIN };
+    this.emit('railbird', { playerId, targetId, stake: RAIL_STAKE, payout: RAIL_WIN });
+    return true;
+  }
+
+  /** Round over: every railbird finds out whether their horse came in. */
+  _settleRailbirds() {
+    const best = Math.max(0, ...this.players.map((p) => p.roundScore));
+    for (const p of this.players) {
+      const bet = p.railbird;
+      if (!bet) continue;
+      p.railbird = null;
+      const horse = this.byId(bet.targetId);
+      // A tie for best still counts — the horse did post the round's top score.
+      if (horse && best > 0 && horse.roundScore === best) {
+        p.total += bet.payout;
+        p.roundBets += bet.payout;
+        this.emit('railbird-won', { playerId: p.id, targetId: bet.targetId, payout: bet.payout });
+      } else {
+        p.total = Math.max(0, p.total - bet.stake);
+        p.roundBets -= bet.stake;
+        this.emit('railbird-lost', { playerId: p.id, targetId: bet.targetId, stake: bet.stake });
+      }
+    }
   }
 
   _settleBet(player) {
@@ -499,8 +548,11 @@ export class Flip7Game {
   }
 
   _finalizeRound() {
+    // Round scores first, then the railbirds settle against the best of them,
+    // then everything banks — so a railbird win can genuinely swing a total.
+    for (const p of this.players) p.roundScore = this.scoreOf(p);
+    this._settleRailbirds();
     const results = this.players.map((p) => {
-      p.roundScore = this.scoreOf(p);
       p.total += p.roundScore;
       p.history.push(p.roundScore);
       return { playerId: p.id, score: p.roundScore, total: p.total, status: p.status };

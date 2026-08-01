@@ -26,6 +26,7 @@ import {
   rematchUpdates,
   tiedLeaders,
   applyPaths,
+  canRailbird,
 } from '../public/js/room.js';
 
 /** Deterministic stand-in for Math.random. */
@@ -381,4 +382,30 @@ test('a fresh player joins with nothing banked', () => {
   assert.deepEqual(p.history, []);
   assert.deepEqual(p.hand, emptyHand());
   assert.equal(p.lastSeen, 500);
+});
+
+test('the railbird window opens only for the dead, funded, and unbet', () => {
+  const dealtRoom = (me) => ({
+    kind: 'dealt',
+    pressBets: true,
+    status: 'playing',
+    lobby: false,
+    roundOver: false,
+    players: {
+      me: { name: 'Me', order: 0, total: 40, state: 'busted', ...me },
+      horse: { name: 'H', order: 1, total: 10, state: 'active' },
+    },
+  });
+
+  assert.equal(canRailbird(dealtRoom({}), 'me'), true);
+  assert.equal(canRailbird(dealtRoom({ state: 'frozen' }), 'me'), true, 'frozen counts as out');
+  assert.equal(canRailbird(dealtRoom({ state: 'active' }), 'me'), false, 'still playing');
+  assert.equal(canRailbird(dealtRoom({ state: 'stayed' }), 'me'), false, 'banked is not out');
+  assert.equal(canRailbird(dealtRoom({ total: 4 }), 'me'), false, 'broke');
+  assert.equal(canRailbird(dealtRoom({ railbird: { targetId: 'horse' } }), 'me'), false, 'bet down');
+  assert.equal(canRailbird({ ...dealtRoom({}), pressBets: false }, 'me'), false, 'rule off');
+  assert.equal(canRailbird({ ...dealtRoom({}), roundOver: true }, 'me'), false, 'round closed');
+  const noHorse = dealtRoom({});
+  noHorse.players.horse.state = 'stayed';
+  assert.equal(canRailbird(noHorse, 'me'), false, 'nobody left to back');
 });

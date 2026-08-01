@@ -3343,6 +3343,12 @@ input {
   font-weight: 800;
 }
 
+/* a horse a railbird could back — quietly tappable, not screaming */
+.stand.is-horse {
+  border-style: dashed;
+  border-color: color-mix(in oklab, var(--gold) 50%, transparent);
+}
+
 /* ── the advice's nerve ──────────────────────────────────────────────────── */
 
 /* Careful / Balanced / Wild, tucked inside the "why" expansion: the odds are

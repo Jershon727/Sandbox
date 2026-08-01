@@ -415,9 +415,10 @@ wss.on('connection', (socket, request) => {
 
       const result = requestOf(entry.table, msg.playerId, msg.intent);
       if (!result.ok) return fail(socket, result.why, 'The dealer refused that.');
-      // Reactions and chat only annotate the feed — stepping the dealer for
-      // them would cut short whatever pause a bot was mid-way through.
-      if (msg.intent?.do === 'react' || msg.intent?.do === 'chat') {
+      // Reactions, chat and railbird bets only annotate the state — stepping
+      // the dealer for them would cut short whatever pause a bot was mid-way
+      // through. (Railbirds resolve at round end, inside the normal loop.)
+      if (['react', 'chat', 'railbird'].includes(msg.intent?.do)) {
         entry.room = entry.table.room; // request() already reprojected
         touch(entry);
         broadcast(entry);

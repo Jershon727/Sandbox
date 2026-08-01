@@ -20,6 +20,7 @@ import {
   makeId,
   isAway,
   hostAwayFor,
+  canRailbird,
   HOST_AWAY_TAKEOVER,
 } from './room.js';
 import { REACTIONS, CHAT_MAX, cleanChat } from './table.js';
@@ -1320,6 +1321,28 @@ function renderSpectate(state) {
  */
 function renderPress(state, { me, myTurn, pending, over }) {
   const host = $('press');
+  const label = $('press-label');
+  const chipsHost = $('press-chips');
+
+  // From the rail: out of the round, backing a horse. The tap itself happens
+  // on the scoreboard (scorer.js); this row is the standing invitation and,
+  // once placed, the ticket.
+  const railTicket = me?.railbird ?? null;
+  const railOpen = canRailbird(state, store.actingId);
+  if (!myTurn && !over && (railOpen || (railTicket && !state.roundOver))) {
+    host.hidden = false;
+    chipsHost.replaceChildren();
+    if (railTicket) {
+      host.dataset.armed = '';
+      const horse = state.players?.[railTicket.targetId]?.name ?? 'your horse';
+      label.textContent = `${railTicket.stake} on ${horse} to top the round — pays +${railTicket.payout}`;
+    } else {
+      delete host.dataset.armed;
+      label.textContent = "You're out — back a horse: tap a live player (5 ⇢ +10)";
+    }
+    return;
+  }
+
   const risk = myTurn ? bustChance(state, store.actingId) : 0;
   const bet = me?.bet ?? null;
   const idle =
@@ -1557,6 +1580,18 @@ function announceWhatHappenedToMe(state) {
     }
     if (line.type === 'reshuffle') {
       riffleDeck();
+      continue;
+    }
+    if (line.type === 'railbird-won' && line.who === store.actingId) {
+      // Round-end beat: the summary modal is opening, so this rides as a toast.
+      sfx.save();
+      buzz([15, 30, 15]);
+      toast(`Your horse came in — +${line.payout} from the rail`, 2600);
+      continue;
+    }
+    if (line.type === 'railbird-lost' && line.who === store.actingId) {
+      sfx.error();
+      toast(`Your ${line.stake} on ${state.players?.[line.to]?.name ?? 'them'} is gone`, 2400);
       continue;
     }
     if (line.type === 'bust' && line.who !== store.actingId) {

@@ -118,6 +118,22 @@ export function standings(room) {
     );
 }
 
+/**
+ * May this player place a railbird bet right now? Out of the round — busted or
+ * frozen — while it runs on, with the house rule on, points to stake, no bet
+ * already down, and somebody still alive to back. Shared between the standings
+ * (which take the tap) and the prompt row (which explains it).
+ */
+export function canRailbird(room, playerId) {
+  if (room?.kind !== 'dealt' || room.pressBets !== true) return false;
+  if (room.lobby || room.roundOver || room.status !== 'playing') return false;
+  const me = room.players?.[playerId];
+  if (!me || me.waiting || me.railbird) return false;
+  if (me.state !== 'busted' && me.state !== 'frozen') return false;
+  if ((me.total ?? 0) < 5) return false;
+  return playerList(room).some((p) => p.id !== playerId && !p.waiting && p.state === 'active');
+}
+
 export function isAway(player, now = Date.now()) {
   return now - (player.lastSeen ?? 0) > AWAY_AFTER;
 }

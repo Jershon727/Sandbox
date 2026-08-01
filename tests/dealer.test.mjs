@@ -968,3 +968,92 @@ test('press state survives a snapshot and reaches the projection', () => {
   assert.deepEqual(room.players[player.id].bet, player.bet);
   assert.equal(room.players[player.id].betUsed, true);
 });
+
+// ── the railbird bet ──────────────────────────────────────────────────────
+
+test('a railbird bet needs the rule on, a dead bettor, a live horse, and the stake', () => {
+  const game = pressGame();
+  dealOut(game);
+  const me = game.byId('me');
+  const bot = game.players.find((p) => p.isBot);
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+
+  assert.equal(game.placeRailbird('me', bot.id), false, 'still in the round');
+  me.status = Status.BUSTED;
+  assert.equal(game.placeRailbird('me', 'me'), false, 'cannot back yourself');
+  bot.status = Status.STAYED;
+  assert.equal(game.placeRailbird('me', bot.id), false, 'the horse must be live');
+  bot.status = Status.ACTIVE;
+  me.total = 4;
+  assert.equal(game.placeRailbird('me', bot.id), false, 'cannot stake what you lack');
+  me.total = 40;
+  assert.equal(applyIntent(game, 'me', { do: 'railbird', targetId: bot.id }).ok, true);
+  assert.equal(game.placeRailbird('me', bot.id), false, 'one per round');
+
+  const off = newGame();
+  dealOut(off);
+  const dead = off.byId('me');
+  dead.status = Status.BUSTED;
+  dead.total = 40;
+  const horse = off.players.find((p) => p.isBot);
+  horse.status = Status.ACTIVE;
+  assert.equal(off.placeRailbird('me', horse.id), false, 'rule is off');
+});
+
+test('the railbird collects when the horse tops the round, pays when it does not', () => {
+  const win = pressGame();
+  dealOut(win);
+  const me = win.byId('me');
+  const bot = win.players.find((p) => p.isBot);
+  me.status = Status.BUSTED;
+  me.numbers = [];
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+  bot.numbers = [{ kind: 'number', value: 9, id: 'h9' }];
+  assert.equal(win.placeRailbird('me', bot.id), true);
+  bot.status = Status.STAYED; // round over: the horse banked the best score
+  for (let i = 0; i < 40 && win.phase === 'round'; i++) win.tick();
+  assert.equal(win.phase !== 'round', true, 'the round closed');
+  assert.equal(me.total, 50, 'stake 5 returned as a +10 win');
+  assert.equal(me.roundBets, 10);
+  assert.ok(win.drain().some((e) => e.type === 'railbird-won'));
+
+  const lose = pressGame(11);
+  dealOut(lose);
+  const dead = lose.byId('me');
+  const horse = lose.players.find((p) => p.isBot);
+  dead.status = Status.BUSTED;
+  dead.numbers = [];
+  dead.total = 40;
+  horse.status = Status.ACTIVE;
+  horse.numbers = [{ kind: 'number', value: 9, id: 'h9b' }];
+  assert.equal(lose.placeRailbird('me', horse.id), true);
+  horse.status = Status.BUSTED; // the horse falls at the last fence
+  horse.roundScore = 0;
+  for (let i = 0; i < 40 && lose.phase === 'round'; i++) lose.tick();
+  assert.equal(dead.total, 35, 'the 5 is gone');
+  assert.equal(dead.roundBets, -5);
+  assert.ok(lose.drain().some((e) => e.type === 'railbird-lost'));
+});
+
+test('a railbird ticket survives a snapshot and reaches the projection', () => {
+  const game = pressGame();
+  dealOut(game);
+  const me = game.byId('me');
+  const bot = game.players.find((p) => p.isBot);
+  me.status = Status.BUSTED;
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+  game.placeRailbird('me', bot.id);
+
+  const back = restore(JSON.parse(JSON.stringify(snapshot(game))));
+  assert.deepEqual(back.byId('me').railbird, me.railbird);
+
+  const room = project(game, { code: 'ABCD' });
+  assert.deepEqual(room.players.me.railbird, {
+    targetId: bot.id,
+    stake: 5,
+    payout: 10,
+  });
+});

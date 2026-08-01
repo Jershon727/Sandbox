@@ -102,6 +102,7 @@ export function addSeat(game, { id, name }) {
     bustCard: null,
     bet: null,
     betUsed: false,
+    railbird: null,
     roundBets: 0,
     joinedLate: game.phase === 'round',
     lastSeen: Date.now(),
@@ -324,6 +325,10 @@ export function project(game, { code, lastRound = null, feed = [] } = {}) {
       // sweat it), and betUsed lets the UI stop offering a second press.
       bet: p.bet ? { wager: p.bet.wager, payout: p.bet.payout } : null,
       betUsed: !!p.betUsed,
+      // A railbird's pick is public too — the horse should feel the backing.
+      railbird: p.railbird
+        ? { targetId: p.railbird.targetId, stake: p.railbird.stake, payout: p.railbird.payout }
+        : null,
     };
   }
 
@@ -385,6 +390,12 @@ export function applyIntent(game, playerId, intent) {
     if (request.type !== 'move') return { ok: false, why: 'not-now' };
     if (request.playerId !== playerId) return { ok: false, why: 'not-your-turn' };
     if (!game.placeBet(playerId, intent.wager)) return { ok: false, why: 'bad-bet' };
+    return { ok: true };
+  }
+
+  if (intent?.do === 'railbird') {
+    // Placed from the rail, on anybody's turn — the engine checks the rest.
+    if (!game.placeRailbird(playerId, intent.targetId)) return { ok: false, why: 'bad-bet' };
     return { ok: true };
   }
 
@@ -551,6 +562,12 @@ export function describeEvent(event, game) {
       return `${name}'s press pays out: +${event.payout}.`;
     case 'bet-lost':
       return `${name}'s press is gone with the hand — another ${event.wager} off the top.`;
+    case 'railbird':
+      return `${name} puts ${event.stake} on ${who(event.targetId)} to top the round.`;
+    case 'railbird-won':
+      return `${who(event.targetId)} topped the round — ${name} collects +${event.payout} from the rail.`;
+    case 'railbird-lost':
+      return `${name}'s ${event.stake} on ${who(event.targetId)} is gone.`;
     case 'tiebreak': {
       // Level at the finish line: without a line for it, the game silently deals
       // another round and looks like it forgot somebody crossed the target.
@@ -624,6 +641,7 @@ export function snapshot(game) {
       bustCard: p.bustCard,
       bet: p.bet,
       betUsed: p.betUsed,
+      railbird: p.railbird,
       roundBets: p.roundBets,
       joinedLate: p.joinedLate,
       lastSeen: p.lastSeen,
@@ -665,6 +683,7 @@ export function restore(snap) {
       bustCard: saved.bustCard,
       bet: saved.bet ?? null,
       betUsed: !!saved.betUsed,
+      railbird: saved.railbird ?? null,
       roundBets: saved.roundBets ?? 0,
       joinedLate: saved.joinedLate,
       lastSeen: saved.lastSeen,

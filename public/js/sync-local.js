@@ -193,9 +193,10 @@ export function createLocalSync() {
         throw Object.assign(new Error('The dealer refused that'), { code: result.why });
       }
       publishTable(table);
-      // Reactions and chat only annotate the feed; restarting the loop for
-      // them would cut short whatever pause a bot was mid-way through.
-      if (wanted?.do !== 'react' && wanted?.do !== 'chat') drive(code);
+      // Reactions, chat and railbird bets only annotate the state; restarting
+      // the loop for them would cut short whatever pause a bot was mid-way
+      // through. (Railbirds resolve at round end, inside the normal loop.)
+      if (!['react', 'chat', 'railbird'].includes(wanted?.do)) drive(code);
     },
 
     watch(code, onChange) {

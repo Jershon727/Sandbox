@@ -19,6 +19,7 @@ import {
   playerList,
   isAway,
   hostAwayFor,
+  canRailbird,
   roundLooksDone,
   AWAY_AFTER,
   HOST_AWAY_TAKEOVER,
@@ -61,6 +62,7 @@ export class Scorer {
     this.handKey = null; // skip hand rebuilds when nothing in it changed
     this.flicker = null; // { id, until } — a row flashing for somebody's bust
     this.armedTargetId = null; // first tap picks a target, the second confirms
+    this.armedRailId = null; // same two-tap dance for a railbird's horse
     this.pendingKey = null; // which action card the armed target belongs to
     this.scrolledTo = null; // whose row the scoreboard is following
     this.userScrolled = false; // ...unless somebody scrolled it themselves
@@ -180,6 +182,24 @@ export class Scorer {
           this.store.intent({ do: 'target', targetId: playerId });
         } else {
           this.armedTargetId = playerId;
+          sfx.tap();
+          this.render();
+        }
+      } else if (canRailbird(this.store.state, this.store.actingId)) {
+        // Out of the round with the house rule on: tapping a live player backs
+        // them from the rail. Same two-tap arm/confirm as aiming a card.
+        const horse = this.store.state?.players?.[playerId];
+        if (playerId === this.store.actingId || horse?.state !== 'active' || horse?.waiting) {
+          sfx.error();
+          toast('Back someone still in the round');
+          return;
+        }
+        if (this.armedRailId === playerId) {
+          this.armedRailId = null;
+          sfx.modifier();
+          this.store.intent({ do: 'railbird', targetId: playerId });
+        } else {
+          this.armedRailId = playerId;
           sfx.tap();
           this.render();
         }
@@ -378,6 +398,9 @@ export class Scorer {
       this.pendingKey = pendingKey;
       this.armedTargetId = null;
     }
+
+    // An armed horse only makes sense while the railbird window is open.
+    if (this.armedRailId && !canRailbird(state, this.store.actingId)) this.armedRailId = null;
 
     this.renderStandings();
 
@@ -638,7 +661,13 @@ export class Scorer {
         'is-target',
         state.pending?.byId === this.store.actingId && state.pending.targets.includes(p.id),
       );
-      row.classList.toggle('is-armed', p.id === this.armedTargetId);
+      row.classList.toggle('is-armed', p.id === this.armedTargetId || p.id === this.armedRailId);
+      // Backable horses, for a player watching from the rail.
+      const railing = canRailbird(state, this.store.actingId);
+      row.classList.toggle(
+        'is-horse',
+        railing && p.state === 'active' && !p.waiting && p.id !== this.store.actingId,
+      );
       row.classList.toggle('is-frozen', p.state === 'frozen');
       // Somebody else's bust: their row flickers red for a beat. Held here
       // rather than toggled by the event, so a re-render can't wipe it early.

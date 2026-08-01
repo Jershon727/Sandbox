@@ -98,6 +98,7 @@ export function recordEvents(table, events) {
       ...(event.score === undefined ? {} : { score: event.score }),
       ...(event.wager === undefined ? {} : { wager: event.wager }),
       ...(event.payout === undefined ? {} : { payout: event.payout }),
+      ...(event.stake === undefined ? {} : { stake: event.stake }),
       ...(event.card ? { card: publicCard(event.card) } : {}),
     });
   }
