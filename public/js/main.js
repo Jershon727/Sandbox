@@ -17,7 +17,9 @@ import {
   playerList,
   standings,
   tiedLeaders,
+  makeId,
 } from './room.js';
+import { REACTIONS } from './table.js';
 import { bustChance, riskBand } from './odds.js';
 import {
   settings,
@@ -37,10 +39,12 @@ import {
   toast,
   announce,
   fillScores,
+  wait,
+  buzz,
 } from './views.js';
-import { sfx, setSoundEnabled, unlockSound } from './sound.js';
-import { initFx, setFxEnabled, celebrate } from './fx.js';
-import { createCard } from './cardview.js';
+import { sfx, setSoundEnabled, unlockSound, setHeartbeat } from './sound.js';
+import { initFx, setFxEnabled, celebrate, burstFrom } from './fx.js';
+import { createCard, dealFrom } from './cardview.js';
 import { seatColor, monogram } from './avatar.js';
 import { ACTIONS, cardName } from './cards.js';
 
@@ -59,7 +63,11 @@ const view = {
   wasMineToAim: false,
   lastActor: undefined, // on a shared phone, who was last handed it
   spectateId: null, // whose hand the read-only strip is showing
+  spectateSeen: null, // { id, round, n, m, c } — that hand as last painted
   armTimer: 0, // Hit/Stay stay inert for a beat after appearing
+  lastReactAt: 0, // reactions are rate-limited to one a second
+  seenReactions: null, // scorekeeping reaction ids already floated
+  lastDeckLeft: null, // for nudging the deck when a card comes off it
 };
 
 // ── boot ──────────────────────────────────────────────────────────────────
@@ -73,6 +81,7 @@ async function boot() {
   buildHostSetup();
   buildSettings();
   wireChrome();
+  buildReactions();
   scorer.mount();
 
   store.subscribe(onState);
@@ -445,6 +454,9 @@ function buildSettings() {
       sfx.save();
     }
   });
+  toggle('Vibrate', 'A tick for each card, a thump for the bad news', 'vibrate', (on) => {
+    if (on) buzz(20);
+  });
   toggle('Confetti', 'Celebrate a Flip 7 properly', 'effects', setFxEnabled);
   toggle('Bust-O-meter', 'Your bust odds and a hit-or-stay call', 'advice', () => {
     if (store.state) scorer.render();
@@ -618,6 +630,10 @@ async function resumeGame() {
 
 function leaveRoom() {
   store.leave();
+  setHeartbeat(null);
+  view.seenReactions = null;
+  view.lastDeckLeft = null;
+  view.spectateSeen = null;
   closeAllModals();
   $('home-resume').hidden = true;
   go('home');
@@ -684,6 +700,74 @@ async function rematch() {
   toast('Scores cleared — good luck');
 }
 
+// ── emoji reactions ───────────────────────────────────────────────────────
+
+/** The tray: six emoji, one tap each, floating up from your row on every phone. */
+function buildReactions() {
+  const tray = $('react-tray');
+  for (const emoji of REACTIONS) {
+    const btn = document.createElement('button');
+    btn.className = 'reactions__btn';
+    btn.type = 'button';
+    btn.textContent = emoji;
+    btn.setAttribute('aria-label', `React with ${emoji}`);
+    btn.addEventListener('click', () => sendReaction(emoji));
+    tray.append(btn);
+  }
+}
+
+function sendReaction(emoji) {
+  const now = Date.now();
+  // One a second: enough to heckle, not enough to wallpaper the table.
+  if (now - view.lastReactAt < 1000) return;
+  view.lastReactAt = now;
+  sfx.tap();
+
+  // In a dealt game the dealer owns the feed, so reactions travel as intents.
+  // In scorekeeping the room is a shared object, so they're just small writes —
+  // old clients ignore the subtree, and stale ones are pruned as we go.
+  if (store.isDealt) {
+    store.intent({ do: 'react', emoji });
+    return;
+  }
+  const paths = { [`reactions/${makeId()}`]: { who: store.actingId ?? store.myId, emoji, at: now } };
+  for (const [k, r] of Object.entries(store.state?.reactions ?? {})) {
+    if (now - (r.at ?? 0) > 15_000) paths[`reactions/${k}`] = null;
+  }
+  store.update(paths);
+}
+
+/** Scorekeeping reactions arrive as room writes; float each one exactly once. */
+function renderReactions(state) {
+  if (store.isDealt) return; // dealt-mode reactions arrive through the feed
+  const all = Object.entries(state.reactions ?? {});
+  if (!view.seenReactions) {
+    // Don't replay whatever happened before we joined or reconnected.
+    view.seenReactions = new Set(all.map(([k]) => k));
+    return;
+  }
+  for (const [k, r] of all) {
+    if (view.seenReactions.has(k)) continue;
+    view.seenReactions.add(k);
+    if (Date.now() - (r.at ?? 0) < 8000) floatReaction(r.who, r.emoji);
+  }
+}
+
+/** The emoji drifts up from the sender's row, so you can see who said it. */
+function floatReaction(playerId, emoji) {
+  if (!REACTIONS.includes(emoji)) return;
+  const anchor = document.querySelector(`.stand[data-player="${playerId}"]`) ?? $('standings');
+  const box = anchor?.getBoundingClientRect?.();
+  if (!box || !box.width) return;
+  const el = document.createElement('span');
+  el.className = 'react-float';
+  el.textContent = emoji;
+  el.style.left = `${Math.round(box.left + box.width * 0.7)}px`;
+  el.style.top = `${Math.round(box.top)}px`;
+  document.body.append(el);
+  setTimeout(() => el.remove(), 1600 * speedFactor());
+}
+
 // ── reacting to state ─────────────────────────────────────────────────────
 
 function onState(state) {
@@ -694,6 +778,11 @@ function onState(state) {
     ? `taking seats · to ${state.target}`
     : `round ${state.round} · to ${state.target}`;
   scorer.render();
+
+  // Reactions make sense once there's a table to react to.
+  $('react-tray').hidden =
+    !!state.lobby || playerList(state).length < 2 || state.status === 'finished';
+  renderReactions(state);
 
   renderDealt(state);
 
@@ -743,7 +832,10 @@ function renderDealt(state) {
   for (const id of ['btn-undo', 'btn-clear']) $(id).hidden = dealt;
   if (dealt) $('btn-end-round').hidden = true;
   $('waiting').hidden = dealt || store.isHost;
-  if (!dealt) return;
+  if (!dealt) {
+    setHeartbeat(null);
+    return;
+  }
 
   const me = state.players?.[store.actingId];
   const myTurn = state.turnId === store.actingId;
@@ -770,11 +862,31 @@ function renderDealt(state) {
       : 'Deal the next round';
   }
 
+  // Six cards is the brink: the Hit button stops being a button and becomes the
+  // dare. The restyle is presentation only — the arming guard still applies.
+  const hitBtn = $('btn-dhit');
+  const atSix = (me?.hand?.numbers?.length ?? 0) === 6 && me?.state === 'active';
+  hitBtn.classList.toggle('is-seven', atSix && myTurn && !pending);
   if (myTurn && !pending) {
     const hand = me?.hand ?? { numbers: [] };
     // Say the number you'd bank, not just "stay" — it's the whole decision.
     $('dstay-sub').textContent = `bank ${roundScoreOf(me)}`;
-    $('dhit-sub').textContent = hand.chance ? 'shielded' : 'one more card';
+    hitBtn.querySelector('.btn__label').textContent = atSix ? 'Flip for the 7' : 'Hit';
+    $('dhit-sub').textContent = atSix
+      ? 'one card from +15'
+      : hand.chance
+        ? 'shielded'
+        : 'one more card';
+  }
+
+  // Five cards deep with the decision live, a low heartbeat runs under the
+  // round, quickening with the odds. Bank, bust or lose the turn and it stops
+  // dead. Runs through the sound switch like every other noise.
+  const heartCards = me?.hand?.numbers?.length ?? 0;
+  if (settings.sound && myTurn && !pending && !over && me?.state === 'active' && heartCards >= 5) {
+    setHeartbeat(bustChance(state, store.actingId));
+  } else {
+    setHeartbeat(null);
   }
 
   // One attribute drives every "it's on you now" cue in the CSS, so the status
@@ -784,14 +896,7 @@ function renderDealt(state) {
   renderAim(state, mineToTarget);
   renderSpectate(state);
 
-  // The deck is public arithmetic — every card is dealt face up — so say how
-  // much of it is left rather than making people count the feed.
-  const deckLine = $('deck-count');
-  const showDeck = !state.lobby && typeof state.deckLeft === 'number' && !over;
-  deckLine.hidden = !showDeck;
-  if (showDeck) {
-    deckLine.textContent = `${state.deckLeft} ${state.deckLeft === 1 ? 'card' : 'cards'} left in the deck`;
-  }
+  renderDeck(state, over);
 
   $('dealt-status').textContent = dealtStatus(state, {
     myTurn,
@@ -900,21 +1005,89 @@ function renderSpectate(state) {
   if (host.dataset.key === key) return;
   host.dataset.key = key;
 
+  // Cards landing in the strip get the same deck-flip the player's own hand
+  // gets — spectating should look like watching cards being dealt, not like a
+  // list updating. Only growth since the last paint of *this* hand animates,
+  // so starting to watch mid-hand doesn't replay it.
+  const prev =
+    view.spectateSeen?.id === focusId && view.spectateSeen.round === state.round
+      ? view.spectateSeen
+      : null;
+  view.spectateSeen = {
+    id: focusId,
+    round: state.round,
+    n: numbers.length,
+    m: mods.length,
+    c: hand.chance ? 1 : 0,
+  };
+  const deck = $('deck');
+  let arriving = 0;
+  const flipIn = (card) => dealFrom(card, deck, arriving++ * 200 * speedFactor());
+
   const cards = $('spectate-cards');
   cards.replaceChildren();
-  for (const v of numbers) {
+  numbers.forEach((v, i) => {
     const card = createCard({ kind: 'number', value: v });
     if (hand.busted) card.classList.add('is-spent');
     if (hand.bustCard?.kind === 'number' && hand.bustCard.value === v) card.classList.add('is-clash');
     cards.append(card);
+    if (prev && i >= prev.n) flipIn(card);
+  });
+  mods.forEach((m, i) => {
+    const card = createCard({ kind: 'modifier', op: m.op, value: m.value });
+    cards.append(card);
+    if (prev && i >= prev.m) flipIn(card);
+  });
+  if (hand.chance) {
+    const card = createCard({ kind: 'action', action: 'chance' });
+    cards.append(card);
+    if (prev && !prev.c) flipIn(card);
   }
-  for (const m of mods) cards.append(createCard({ kind: 'modifier', op: m.op, value: m.value }));
-  if (hand.chance) cards.append(createCard({ kind: 'action', action: 'chance' }));
   if (hand.bustCard) {
     const killer = createCard(hand.bustCard);
     killer.classList.add('is-killer');
     cards.append(killer);
   }
+}
+
+/**
+ * The deck itself: a face-down mini card with a live count. The deck is public
+ * arithmetic — every card is dealt face up — so show it rather than making
+ * people count the feed. Deal-in flips originate from this element, it nudges
+ * each time a card comes off it, and it riffles when the discard shuffles back.
+ */
+function renderDeck(state, over) {
+  const row = $('deck-row');
+  const show = !state.lobby && typeof state.deckLeft === 'number' && !over;
+  row.hidden = !show;
+  if (!show) {
+    view.lastDeckLeft = null;
+    return;
+  }
+
+  const count = $('deck-count');
+  count.textContent = `${state.deckLeft} ${state.deckLeft === 1 ? 'card' : 'cards'} left`;
+
+  if (view.lastDeckLeft !== null && state.deckLeft < view.lastDeckLeft) {
+    const deck = $('deck');
+    // Remove-and-reflow so back-to-back deals each get their own nudge.
+    deck.classList.remove('is-push');
+    count.classList.remove('is-counting');
+    void deck.offsetWidth;
+    deck.classList.add('is-push');
+    count.classList.add('is-counting');
+  }
+  view.lastDeckLeft = state.deckLeft;
+}
+
+/** The reshuffle, made physical: a quick riffle and its sound. */
+function riffleDeck() {
+  sfx.riffle();
+  const deck = $('deck');
+  if ($('deck-row').hidden) return;
+  deck.classList.remove('is-riffle');
+  void deck.offsetWidth;
+  deck.classList.add('is-riffle');
 }
 
 /** Hit and Stay: on screen at once, tappable a beat later. */
@@ -993,16 +1166,6 @@ function announceTurn(state, { myTurn, mineToAim, pending }) {
   view.wasMineToAim = mineToAim;
 }
 
-/** A short buzz where the device supports it. Silent everywhere else. */
-function buzz(pattern) {
-  if (!settings.sound) return; // the sound switch is the "don't draw attention" switch
-  try {
-    navigator.vibrate?.(pattern);
-  } catch {
-    /* not available, or blocked without a gesture */
-  }
-}
-
 /**
  * Walking in halfway through a round means sitting that one out — the cards were
  * dealt before you got here. Told nothing, you watch a whole round go past
@@ -1040,6 +1203,24 @@ function announceWhatHappenedToMe(state) {
   for (const line of feed) {
     if (line.n <= view.lastAnnounced) continue;
     view.lastAnnounced = line.n;
+
+    // Table-wide beats first — these aren't aimed at anyone in particular.
+    if (line.type === 'react') {
+      floatReaction(line.who, line.emoji);
+      continue;
+    }
+    if (line.type === 'reshuffle') {
+      riffleDeck();
+      continue;
+    }
+    if (line.type === 'bust' && line.who !== store.actingId) {
+      // Somebody else went down: a muted thud, and their row flickers red.
+      // The class lives on the scorer so re-renders don't wipe it mid-flash.
+      sfx.thud();
+      scorer.flicker = { id: line.who, until: Date.now() + 700 };
+      scorer.render();
+    }
+
     if (line.to !== store.actingId) continue;
 
     // Who did it, by name — "frozen" without a culprit is the part that annoys
@@ -1072,16 +1253,21 @@ function announceWhatHappenedToMe(state) {
       sfx.save();
       toast(`${by === 'You' ? 'You kept' : `${by} gave you`} a Second Chance`);
     } else if (line.type === 'bust' && self) {
-      // The card that did it, on screen. Being told only "busted" leaves you
+      // The duplicate lands and both copies are already ringed on your hand.
+      // Then, for a beat, nothing — the silence is the dread. Then the verdict,
+      // with the card that did it: being told only "busted" leaves you
       // wondering which duplicate landed.
-      sfx.bust();
-      buzz([60, 40, 90]);
-      showBanner('Busted', {
-        tone: 'bust',
-        sub: `${cardName(line.card)} — you already had one, so this round scores 0`,
-        ms: 1800,
-        card,
-      });
+      (async () => {
+        await wait(400);
+        sfx.bust();
+        buzz([60, 40, 90]);
+        showBanner('Busted', {
+          tone: 'bust',
+          sub: `${cardName(line.card)} — you already had one, so this round scores 0`,
+          ms: 1800,
+          card,
+        });
+      })();
     } else if (line.type === 'stay' && self) {
       sfx.stay();
       showBanner(`Banked ${line.score ?? 0}`, {
@@ -1090,12 +1276,19 @@ function announceWhatHappenedToMe(state) {
         ms: 1300,
       });
     } else if (line.type === 'second-chance' && self) {
-      sfx.save();
+      // The shield-break beat: the duplicate hits the shield, the shield
+      // shatters, and the save is quantified — the number it just kept alive.
+      sfx.shield();
+      buzz([20, 40, 20]);
+      const saved = roundScoreOf(state.players?.[store.actingId]);
+      const shield = createCard({ kind: 'action', action: 'chance' });
+      shield.classList.add('is-shatter');
+      burstFrom($('hand-card'), { count: 24, power: 9, colors: ['#2ed6ad', '#66d97a', '#7ff0b6'] });
       showBanner('Second Chance!', {
         tone: 'save',
-        sub: `${cardName(line.card)} would have busted you — both cards discarded`,
-        ms: 1500,
-        card,
+        sub: `${cardName(line.card)} bounced off your shield — that would've cost you ${saved}`,
+        ms: 1700,
+        card: shield,
       });
     }
   }
@@ -1203,28 +1396,47 @@ function onSyncError(error) {
 
 async function showRoundSummary(last) {
   const state = store.state;
+  const results = last.results ?? [];
   $('round-title').textContent = `Round ${last.round}`;
-  fillScores(
-    $('round-scores'),
-    (last.results ?? []).map((r) => ({
-      name: r.name,
-      seat: state.players?.[r.id]?.order,
-      delta: r.delta,
-      total: r.total,
-      busted: r.busted,
-      note: noteFor(r),
-    })),
-    state.target,
+
+  // The round's stories, computed from before/after totals: a lead change gets
+  // named and its row pulsed gold; the biggest score coming from the bottom
+  // half of the table gets called a comeback.
+  const before = results.map((r) => ({ id: r.id, total: (r.total ?? 0) - (r.delta ?? 0) }));
+  const prevBest = Math.max(0, ...before.map((r) => r.total));
+  const prevLeaders = new Set(
+    before.filter((r) => r.total === prevBest && prevBest > 0).map((r) => r.id),
   );
+  const best = Math.max(0, ...results.map((r) => r.total ?? 0));
+  const leaders = results.filter((r) => (r.total ?? 0) === best && best > 0);
+  const newLeader =
+    leaders.length === 1 && prevLeaders.size > 0 && !prevLeaders.has(leaders[0].id)
+      ? leaders[0]
+      : null;
+
+  const bottomHalf = new Set(
+    [...before]
+      .sort((a, b) => a.total - b.total)
+      .slice(0, Math.floor(before.length / 2))
+      .map((r) => r.id),
+  );
+  const bestDelta = [...results].sort((a, b) => (b.delta ?? 0) - (a.delta ?? 0))[0];
+  const comebackId =
+    results.length >= 3 && bestDelta && (bestDelta.delta ?? 0) > 0 && bottomHalf.has(bestDelta.id)
+      ? bestDelta.id
+      : null;
 
   // Level at the finish line means one more round, exactly like the card game —
   // but silently dealing it looks like the app ignored the target. Say so.
-  const tied = tiedLeaders(last.results ?? [], state.target);
+  const tied = tiedLeaders(results, state.target);
   const note = $('round-note');
-  note.hidden = !tied;
+  note.hidden = !tied && !newLeader;
   if (tied) {
     const names = andList(tied.map((t) => t.name));
     note.textContent = `${names} tied at ${tied[0].total} — one more round decides it.`;
+    announce(note.textContent);
+  } else if (newLeader) {
+    note.textContent = `${newLeader.name} takes the lead.`;
     announce(note.textContent);
   }
 
@@ -1237,6 +1449,8 @@ async function showRoundSummary(last) {
       : `Close — waiting for ${hostName} to deal`
     : `Start round ${last.round + 1}`;
 
+  // A Flip 7 owns the screen for a beat before the paperwork covers it.
+  if (results.some((r) => r.flip7)) await wait(2400);
   // The tie gets its beat before the scores cover it.
   if (tied) {
     await showBanner(`Tied at ${tied[0].total}`, {
@@ -1244,6 +1458,22 @@ async function showRoundSummary(last) {
       ms: 1500,
     });
   }
+
+  // Filled after the waits so the totals count up while the modal is on screen.
+  fillScores(
+    $('round-scores'),
+    results.map((r) => ({
+      name: r.name,
+      seat: state.players?.[r.id]?.order,
+      delta: r.delta,
+      total: r.total,
+      busted: r.busted,
+      lead: newLeader?.id === r.id,
+      note: [noteFor(r), r.id === comebackId ? 'comeback' : ''].filter(Boolean).join(' · '),
+    })),
+    state.target,
+    { countUp: true },
+  );
   openModal('round');
   sfx.count();
 }
@@ -1254,13 +1484,17 @@ function andList(names) {
   return `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
 }
 
-function showWinner(state) {
+async function showWinner(state) {
   const winner = state.players?.[state.winnerId];
   if (!winner) return;
   const mine = state.winnerId === store.myId;
 
+  // A game won on a Flip 7 gets its jackpot beat before the paperwork.
+  if ((state.lastRound?.results ?? []).some((r) => r.flip7)) await wait(2400);
+
   $('over-title').textContent = mine ? 'You win!' : `${winner.name} wins`;
   $('over-sub').textContent = `${winner.total} points in ${(state.round ?? 2) - 1} rounds.`;
+  // Bars fill in rank order — a little podium ceremony for the final table.
   fillScores(
     $('over-scores'),
     standings(state).map((p) => ({
@@ -1272,14 +1506,18 @@ function showWinner(state) {
       note: p.id === state.winnerId ? 'winner' : '',
     })),
     state.target,
+    { countUp: true, stagger: true },
   );
 
   $('btn-rematch').hidden = !store.isHost;
   closeModal($('modal-round'));
   openModal('over');
+  // Everyone's evening ends on confetti — somebody at the table won, and the
+  // fanfare (or the descending shrug) says whether it was you.
+  celebrate({ count: mine ? 170 : 110 });
   if (mine) {
     sfx.win();
-    celebrate();
+    buzz([40, 60, 40, 60, 120]);
   } else {
     sfx.lose();
   }

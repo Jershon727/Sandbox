@@ -363,19 +363,35 @@ export function describeEvent(event, game) {
   const who = (id) => (id === undefined ? '' : (game.byId(id)?.name ?? 'Someone'));
   const name = who(event.playerId);
 
+  // Bots have personalities (ai.js); at the tense end of a hand their lines
+  // carry a little of it, so the table reads like company rather than a log.
+  const actor = event.playerId === undefined ? null : game.byId(event.playerId);
+  const botStyle = actor?.isBot ? actor.style : null;
+
   switch (event.type) {
     case 'round-start':
       return `Round ${event.round} — cards out.`;
-    case 'gain':
-      return `${name} drew ${cardName(event.card)}.`;
+    case 'gain': {
+      const base = `${name} drew ${cardName(event.card)}.`;
+      if (botStyle && event.card.kind === 'number' && actor.numbers.length >= 5) {
+        if (botStyle === 'reckless') return `${base} Still hitting, of course.`;
+        if (botStyle === 'cautious') return `${base} And ${name} looks nervous.`;
+        return `${base} ${actor.numbers.length} deep and pushing for the 7.`;
+      }
+      return base;
+    }
     case 'second-chance':
       return `${name} used their Second Chance on a second ${event.card.value}.`;
     case 'bust':
-      return `${name} busted on a second ${event.card.value}.`;
+      return botStyle === 'reckless'
+        ? `${name} busted on a second ${event.card.value}. Classic ${name}.`
+        : `${name} busted on a second ${event.card.value}.`;
     case 'flip7':
       return `${name} hit FLIP 7 — the round ends.`;
     case 'stay':
-      return `${name} stayed on ${event.score}.`;
+      return botStyle === 'reckless' && (event.score ?? 0) >= 25
+        ? `${name} stayed on ${event.score}. Even ${name} has limits.`
+        : `${name} stayed on ${event.score}.`;
     case 'freeze':
       return event.playerId === event.targetId
         ? `${name} froze themselves on ${event.score}.`

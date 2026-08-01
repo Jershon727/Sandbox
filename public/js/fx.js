@@ -35,6 +35,14 @@ export function initFx(el) {
 export function setFxEnabled(on) {
   allowed = !!on;
   if (!allowed) stop();
+  // Lets the stylesheet gate its own flourishes (glows, flashes, floats) on the
+  // same switch that gates the confetti, so "effects off" means all of them.
+  document.documentElement.classList.toggle('fx-off', !allowed);
+}
+
+/** For the odd DOM flourish built outside this module. */
+export function fxAllowed() {
+  return allowed;
 }
 
 function resize() {
@@ -54,7 +62,7 @@ function stop() {
   if (ctx) ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
 }
 
-function spawn(x, y, count, power) {
+function spawn(x, y, count, power, palette = CARD_COLORS) {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2;
     const speed = power * (0.35 + Math.random() * 0.9);
@@ -67,7 +75,7 @@ function spawn(x, y, count, power) {
       h: 10 + Math.random() * 10,
       spin: (Math.random() - 0.5) * 0.3,
       rot: Math.random() * Math.PI,
-      color: CARD_COLORS[(Math.random() * CARD_COLORS.length) | 0],
+      color: palette[(Math.random() * palette.length) | 0],
       life: 1,
       drag: 0.985 + Math.random() * 0.01,
     });
@@ -114,12 +122,12 @@ function run() {
 }
 
 /** A burst centred on an element — used when a hand hits Flip 7. */
-export function burstFrom(el, { count = 46, power = 13 } = {}) {
+export function burstFrom(el, { count = 46, power = 13, colors } = {}) {
   if (!allowed || !ctx) return;
   const box = el?.getBoundingClientRect?.();
   const x = box ? box.left + box.width / 2 : window.innerWidth / 2;
   const y = box ? box.top + box.height / 2 : window.innerHeight / 2;
-  spawn(x, y, count, power);
+  spawn(x, y, count, power, colors ?? CARD_COLORS);
   run();
 }
 

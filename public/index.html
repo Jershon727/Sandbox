@@ -243,6 +243,11 @@
 
         <div class="standings" id="standings" aria-label="Scores"></div>
 
+        <!-- The social layer: one tap sends an emoji floating up from your row
+             on every phone at the table. Buttons are built from the shared
+             REACTIONS list so client and dealer can't disagree. -->
+        <div class="reactions" id="react-tray" hidden role="group" aria-label="Send a reaction"></div>
+
         <p class="roomhint" id="room-hint" hidden></p>
 
         <div class="tally__card" id="hand-card">
@@ -304,7 +309,12 @@
             <div class="spectate__cards" id="spectate-cards"></div>
           </div>
 
-          <p class="deckline" id="deck-count" hidden></p>
+          <!-- The deck itself, face down with a running count. Cards visibly
+               come off it, and it riffles when the discard is shuffled back in. -->
+          <div class="deckrow" id="deck-row" hidden>
+            <span class="deck" id="deck" aria-hidden="true">7</span>
+            <span class="deckline" id="deck-count">94 cards left</span>
+          </div>
           <ol class="feed" id="feed" aria-live="polite" aria-label="What just happened"></ol>
 
           <!-- An action card you have to aim. The card is shown because being told

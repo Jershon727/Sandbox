@@ -25,6 +25,9 @@ import {
 /** How much of the round's account to keep. Enough to scroll back a turn or two. */
 export const FEED_LINES = 40;
 
+/** The whole social vocabulary. Anything else a client sends is refused. */
+export const REACTIONS = ['😱', '🔥', '😂', '❄️', '👏', '💀'];
+
 /**
  * A table is a game plus everything the players read about it: the account of
  * the round, the last round's results, and the projection built from all three.
@@ -114,6 +117,26 @@ export function step(table) {
 
 /** Apply a player's request. A new deal clears the previous round's paperwork. */
 export function request(table, playerId, intent) {
+  // Reactions are social, not gameplay: any seated player may send one at any
+  // moment, and they go straight into the account of the round rather than
+  // through the rules engine. Old clients render the line as plain text.
+  if (intent?.do === 'react') {
+    const player = table.game.byId(playerId);
+    if (!player || !REACTIONS.includes(intent.emoji)) {
+      return { ok: false, why: 'bad-reaction' };
+    }
+    player.lastSeen = Date.now();
+    noteFeed(table, {
+      text: `${player.name} ${intent.emoji}`,
+      type: 'react',
+      emoji: intent.emoji,
+      who: playerId,
+      to: playerId,
+    });
+    reproject(table);
+    return { ok: true };
+  }
+
   const result = applyIntent(table.game, playerId, intent);
   if (result.ok && result.newRound) {
     table.lastRound = null;

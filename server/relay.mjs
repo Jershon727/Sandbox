@@ -376,6 +376,14 @@ wss.on('connection', (socket, request) => {
 
       const result = requestOf(entry.table, msg.playerId, msg.intent);
       if (!result.ok) return fail(socket, result.why, 'The dealer refused that.');
+      // A reaction only annotates the feed — stepping the dealer for it would
+      // cut short whatever pause a bot was mid-way through.
+      if (msg.intent?.do === 'react') {
+        entry.room = entry.table.room; // request() already reprojected
+        touch(entry);
+        broadcast(entry);
+        return;
+      }
       runDealer(code);
       return;
     }

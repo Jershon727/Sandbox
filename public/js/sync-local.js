@@ -193,7 +193,9 @@ export function createLocalSync() {
         throw Object.assign(new Error('The dealer refused that'), { code: result.why });
       }
       publishTable(table);
-      drive(code);
+      // A reaction only annotates the feed; restarting the loop for it would
+      // cut short whatever pause a bot was mid-way through.
+      if (wanted?.do !== 'react') drive(code);
     },
 
     watch(code, onChange) {

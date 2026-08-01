@@ -4,10 +4,27 @@
  * the two modes feel like one app.
  */
 
-import { speedFactor } from './storage.js';
+import { settings, speedFactor } from './storage.js';
 import { monogram } from './avatar.js';
 
 export const wait = (ms) => new Promise((r) => setTimeout(r, ms * speedFactor()));
+
+/**
+ * A short buzz where the device supports it — its own switch in settings, not
+ * chained to sound, because "quiet" and "don't touch me" are different asks.
+ * Silent everywhere else (iOS Safari has no navigator.vibrate).
+ */
+export function buzz(pattern) {
+  if (!settings.vibrate) return;
+  try {
+    navigator.vibrate?.(pattern);
+  } catch {
+    /* not available, or blocked without a gesture */
+  }
+}
+
+export const reducedMotion = () =>
+  !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
 // ── modals ────────────────────────────────────────────────────────────────
 
@@ -117,18 +134,22 @@ export function announce(text) {
 // ── scoreboards ───────────────────────────────────────────────────────────
 
 /**
- * @param {object[]} rows  { name, seat, delta, total, note, busted, winner }
+ * @param {object[]} rows  { name, seat, delta, total, note, busted, winner, lead }
  * @param {number} target  used to draw the race-to-target progress bar
+ * @param {object} opts    countUp: totals count up from before the round;
+ *                         stagger: bars fill in rank order, top first
  */
-export function fillScores(host, rows, target) {
+export function fillScores(host, rows, target, { countUp = false, stagger = false } = {}) {
   host.replaceChildren();
   const ranked = [...rows].sort((a, b) => b.total - a.total);
+  const still = reducedMotion();
 
   ranked.forEach((row, i) => {
     const el = document.createElement('div');
     el.className = 'row';
     if (row.winner) el.classList.add('is-winner');
     if (row.busted) el.classList.add('is-busted');
+    if (row.lead) el.classList.add('is-lead');
 
     const rank = document.createElement('span');
     rank.className = 'row__rank';
@@ -151,7 +172,15 @@ export function fillScores(host, rows, target) {
 
     const total = document.createElement('span');
     total.className = 'row__total';
-    total.textContent = String(row.total);
+    // Counting the total up from where it stood makes the round's damage
+    // legible as movement, not just a bigger number.
+    const from = row.total - (row.delta ?? 0);
+    if (countUp && !still && row.delta > 0) {
+      total.textContent = String(from);
+      tweenText(total, from, row.total, 700);
+    } else {
+      total.textContent = String(row.total);
+    }
 
     el.append(rank, name, delta, total);
 
@@ -160,6 +189,9 @@ export function fillScores(host, rows, target) {
       bar.className = 'bar';
       const fill = document.createElement('span');
       fill.className = 'bar__fill';
+      if (countUp && !still) fill.style.width = `${Math.min(100, (from / target) * 100)}%`;
+      // Bars landing top-down give the final table a podium beat.
+      if (stagger && !still) fill.style.transitionDelay = `${i * 130}ms`;
       bar.append(fill);
       el.append(bar);
       // Let the row paint before the bar animates, so the fill is visible.
@@ -170,4 +202,16 @@ export function fillScores(host, rows, target) {
 
     host.append(el);
   });
+}
+
+/** Ease a number in an element from one value to another. */
+function tweenText(el, from, to, span = 700) {
+  const start = performance.now();
+  const step = (now) => {
+    const t = Math.min(1, (now - start) / span);
+    const eased = 1 - (1 - t) ** 3;
+    el.textContent = String(Math.round(from + (to - from) * eased));
+    if (t < 1) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
 }

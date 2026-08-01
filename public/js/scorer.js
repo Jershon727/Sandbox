@@ -21,10 +21,10 @@ import {
   roundLooksDone,
 } from './room.js';
 import { advise } from './odds.js';
-import { toast, showBanner } from './views.js';
+import { toast, showBanner, buzz, reducedMotion } from './views.js';
 import { sfx } from './sound.js';
-import { burstFrom } from './fx.js';
-import { settings } from './storage.js';
+import { burstFrom, celebrate, fxAllowed } from './fx.js';
+import { settings, speedFactor } from './storage.js';
 
 const MOD_KEYS = [
   { op: 'add', value: 2 },
@@ -43,6 +43,9 @@ export class Scorer {
     this.flag = null; // transient badge: bust | flip7 | save
     this.lastFlip7 = null; // so a Flip 7 is only announced once
     this.dealSource = null;
+    this.dealtHand = null; // { key, seen } — the dealt hand as last painted
+    this.handKey = null; // skip hand rebuilds when nothing in it changed
+    this.flicker = null; // { id, until } — a row flashing for somebody's bust
     this.armedTargetId = null; // first tap picks a target, the second confirms
     this.pendingKey = null; // which action card the armed target belongs to
     this.scrolledTo = null; // whose row the scoreboard is following
@@ -373,6 +376,13 @@ export class Scorer {
     // A ring round your own hand while the dealer is waiting on you.
     this.el.card.classList.toggle('is-turn', dealt && this.store.myTurn && !state.pending);
     this.el.card.classList.toggle('is-frozen', dealt && t?.state === 'frozen');
+    // Five cards in, the hand card starts to run warm; at six it glows. The
+    // escalation dies with the hand — bank, bust or freeze and it goes cold.
+    const heatable =
+      dealt && t?.state === 'active' && !t?.waiting && !shape.busted && !state.lobby && !state.roundOver;
+    const heat = heatable ? hand.numbers.length : 0;
+    if (heat >= 5) this.el.card.dataset.heat = String(Math.min(6, heat));
+    else delete this.el.card.dataset.heat;
     renderPips(this.el.pips, hand.numbers.length);
     this.renderHand(hand, shape);
 
@@ -488,12 +498,44 @@ export class Scorer {
 
     const mine = hit.id === this.store.actingId;
     sfx.flip7();
+    buzz([30, 60, 30, 60, 120]);
+
+    // The jackpot gets the full treatment: the seven cards light up in order,
+    // the screen flashes gold, and everyone gets the shower — a Flip 7 ends the
+    // round for the whole table, so the whole table celebrates it. The summary
+    // modal is held back (main.js) so none of this plays under a dialog.
+    if (fxAllowed() && !reducedMotion()) {
+      const strip = mine ? this.el.hand : document.getElementById('spectate-cards');
+      [...(strip?.querySelectorAll(".card[data-kind='number']") ?? [])].forEach((card, i) => {
+        if (card.classList.contains('is-new')) return; // still mid deal-in
+        card.style.animationDelay = `${i * 80}ms`;
+        card.classList.add('is-glow7');
+      });
+      goldFlash();
+      if (mine) this.flyBonus();
+    }
     burstFrom(mine ? this.el.card : this.el.standings);
+    celebrate({ count: 90 });
     showBanner('FLIP 7!', {
       tone: 'flip7',
       sub: mine ? '+15 bonus — round over' : `${hit.name} — round over`,
       ms: 1500,
     });
+  }
+
+  /** "+15" leaves the hand and lands on the score readout. */
+  flyBonus() {
+    const from = this.el.hand.getBoundingClientRect();
+    const to = this.el.score.getBoundingClientRect();
+    const el = document.createElement('span');
+    el.className = 'fly15';
+    el.textContent = '+15';
+    el.style.left = `${Math.round(from.left + from.width / 2)}px`;
+    el.style.top = `${Math.round(from.top + from.height / 2)}px`;
+    el.style.setProperty('--fx', `${Math.round(to.left + to.width / 2 - (from.left + from.width / 2))}px`);
+    el.style.setProperty('--fy', `${Math.round(to.top + to.height / 2 - (from.top + from.height / 2))}px`);
+    document.body.append(el);
+    setTimeout(() => el.remove(), 1200 * speedFactor());
   }
 
   renderStandings() {
@@ -530,6 +572,9 @@ export class Scorer {
       );
       row.classList.toggle('is-armed', p.id === this.armedTargetId);
       row.classList.toggle('is-frozen', p.state === 'frozen');
+      // Somebody else's bust: their row flickers red for a beat. Held here
+      // rather than toggled by the event, so a re-render can't wipe it early.
+      row.classList.toggle('is-flicker', this.flicker?.id === p.id && now < this.flicker.until);
 
       const rank = document.createElement('span');
       rank.className = 'stand__rank';
@@ -552,7 +597,10 @@ export class Scorer {
       else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
         tags.append(chip('frozen', 'freeze'));
       } else if (this.store.isDealt && state.turnId === p.id) {
-        tags.append(chip(p.id === this.store.actingId ? 'your turn' : 'playing', 'turn'));
+        // A bot's pause is deliberate (ai.js thinkingTime) — label it as
+        // thought, with a pulsing ellipsis, rather than a generic "playing".
+        if (p.isBot) tags.append(chip('thinking', 'thinking'));
+        else tags.append(chip(p.id === this.store.actingId ? 'your turn' : 'playing', 'turn'));
       }
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
         tags.append(chip('away', 'away'));
@@ -665,6 +713,22 @@ export class Scorer {
       items.push({ card: hand.bustCard, kind: 'bust', i: 0, killer: true });
     }
 
+    // Skip the rebuild when nothing in the hand changed: renders arrive on
+    // every table event, and rebuilding mid deal-in cuts the flip short.
+    const renderKey = [
+      this.store.isDealt ? 'd' : 's',
+      this.target?.id ?? '',
+      this.store.state?.round ?? 0,
+      this.target?.waiting ? 'w' : '',
+      hand.busted ? 'b' : '',
+      hand.numbers.join(','),
+      hand.mods.map((m) => `${m.op}${m.value}`).join(','),
+      hand.chance ? 'c' : '',
+      hand.bustCard ? `k${hand.bustCard.kind}:${hand.bustCard.value ?? hand.bustCard.action ?? ''}` : '',
+    ].join('|');
+    if (this.handKey === renderKey) return;
+    this.handKey = renderKey;
+
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'hand__empty';
@@ -677,8 +741,37 @@ export class Scorer {
             : 'Tap the cards below';
       host.replaceChildren(empty);
       this.dealSource = null;
+      // An empty dealt hand is the baseline the next deal animates from.
+      if (this.store.isDealt) {
+        this.dealtHand = { key: this.dealtKey(), seen: { n: 0, m: 0, c: 0 } };
+      }
       return;
     }
+
+    // In a dealt game cards arrive from the deck, not from a keypad tap, so the
+    // flip-in is driven by the hand growing between renders: anything beyond
+    // what was painted last time flips in from the deck, rings its value and
+    // ticks the motor. Counted per category (a new number lands before held
+    // modifiers, so a flat index diff would flip the wrong card), and keyed per
+    // round and player so a reload mid-round, or the phone changing hands in
+    // pass-and-play, doesn't replay a whole hand.
+    let seen = null;
+    if (this.store.isDealt) {
+      const key = this.dealtKey();
+      const now = { n: hand.numbers.length, m: hand.mods.length, c: hand.chance ? 1 : 0 };
+      const prevRound = (this.dealtHand?.key ?? '').split(':')[0];
+      const sameRound = prevRound === String(this.store.state?.round ?? 0);
+      seen = !this.dealtHand
+        ? now // first paint after a join or reload — nothing to replay
+        : this.dealtHand.key === key
+          ? this.dealtHand.seen
+          : sameRound
+            ? now // same round, different hand: the phone changed hands
+            : { n: 0, m: 0, c: 0 }; // a fresh deal
+      this.dealtHand = { key, seen: now };
+    }
+    const deck = document.getElementById('deck');
+    let arriving = 0;
 
     const before = host.querySelectorAll('.card').length;
     host.replaceChildren();
@@ -706,6 +799,12 @@ export class Scorer {
       if (this.store.isDealt) {
         // Dealt cards aren't yours to take back.
         host.append(el);
+        const isNew =
+          seen &&
+          ((item.kind === 'number' && item.i >= seen.n) ||
+            (item.kind === 'mod' && item.i >= seen.m) ||
+            (item.kind === 'chance' && !seen.c));
+        if (isNew) this.dealtCardIn(el, item, arriving++, deck);
         continue;
       }
       el.setAttribute('role', 'button');
@@ -726,6 +825,32 @@ export class Scorer {
     this.dealSource = null;
   }
 
+  /** Which dealt hand the growth-diff is tracking: this round, this player. */
+  dealtKey() {
+    return `${this.store.state?.round ?? 0}:${this.target?.id ?? ''}`;
+  }
+
+  /**
+   * One card arriving from the deck: the existing deal-in flip (face down for
+   * the first half, then the reveal), with the value ringing as the face turns
+   * over rather than when the DOM changes. A Flip Three lands as a cascade.
+   */
+  dealtCardIn(el, item, order, deck) {
+    const delay = order * 200 * speedFactor();
+    dealFrom(el, deck, delay);
+    const reveal = delay + 230 * speedFactor();
+    setTimeout(() => {
+      if (item.kind === 'number') {
+        sfx.gain(item.card.value);
+        // The tick sharpens as the hand fattens — five and six get a double.
+        buzz(this.hand.numbers.length >= 5 ? [15, 40, 15] : 10);
+      } else {
+        sfx.modifier();
+        buzz(10);
+      }
+    }, reveal);
+  }
+
   renderPadState(hand) {
     for (let v = 0; v <= 12; v++) {
       const key = this.padKeys.get(`n${v}`);
@@ -744,6 +869,14 @@ export class Scorer {
     this.padKeys.get('chance').classList.toggle('is-on', hand.chance);
     this.padKeys.get('bust').classList.toggle('is-on', hand.busted);
   }
+}
+
+/** A brief gold wash over the whole screen — the Flip 7 moment. */
+function goldFlash() {
+  const el = document.createElement('div');
+  el.className = 'goldflash';
+  document.body.append(el);
+  setTimeout(() => el.remove(), 950 * speedFactor());
 }
 
 function chip(text, tone) {

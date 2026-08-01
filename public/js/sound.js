@@ -27,6 +27,40 @@ function ready() {
 export function setSoundEnabled(on) {
   enabled = !!on;
   if (master) master.gain.value = enabled ? 0.3 : 0;
+  if (!enabled) setHeartbeat(null);
+}
+
+// ── the heartbeat ─────────────────────────────────────────────────────────
+
+/**
+ * A soft low pulse for a fat hand: five cards in, the decision in front of you
+ * is the whole game, and the room should feel it. The rate follows the bust
+ * odds, so a 60% hand thumps noticeably faster than a 25% one.
+ */
+let heartTimer = 0;
+let heartPeriod = 0;
+
+function heartThump() {
+  if (!enabled) return;
+  tone({ freq: 74, to: 56, dur: 0.09, type: 'sine', gain: 0.2 });
+  tone({ freq: 66, to: 48, dur: 0.11, type: 'sine', gain: 0.13, delay: 0.16 });
+}
+
+/** Start, retune or (with null) stop the heartbeat. Safe to call every render. */
+export function setHeartbeat(risk) {
+  if (risk == null || !enabled) {
+    clearInterval(heartTimer);
+    heartTimer = 0;
+    heartPeriod = 0;
+    return;
+  }
+  // Quantised so a 1% odds wobble doesn't restart the interval every render.
+  const period = Math.max(520, 1400 - Math.round((risk * 10)) * 100);
+  if (heartTimer && period === heartPeriod) return;
+  clearInterval(heartTimer);
+  heartPeriod = period;
+  heartThump();
+  heartTimer = setInterval(heartThump, period);
 }
 
 /** Browsers only allow audio after a gesture — call this from the first tap. */
@@ -137,6 +171,24 @@ export const sfx = {
   },
   count() {
     tone({ freq: 900, to: 1100, dur: 0.05, type: 'sine', gain: 0.14 });
+  },
+  /** Somebody else's bust: a muted thud, not your funeral march. */
+  thud() {
+    tone({ freq: 130, to: 55, dur: 0.18, type: 'sine', gain: 0.2 });
+    noise({ dur: 0.09, gain: 0.08, hp: 120, lp: 900 });
+  },
+  /** A Second Chance shattering: a glassy crack, then the save. */
+  shield() {
+    noise({ dur: 0.12, gain: 0.22, hp: 2600, lp: 9000 });
+    tone({ freq: 1400, to: 700, dur: 0.12, type: 'triangle', gain: 0.14 });
+    tone({ freq: 520, to: 660, dur: 0.12, type: 'sine', gain: 0.28, delay: 0.14 });
+    tone({ freq: 780, to: 990, dur: 0.18, type: 'sine', gain: 0.24, delay: 0.23 });
+  },
+  /** The deck being riffled back together. */
+  riffle() {
+    for (let i = 0; i < 4; i++) {
+      noise({ dur: 0.05, gain: 0.16, hp: 1500, lp: 9000, delay: i * 0.07 });
+    }
   },
   error() {
     tone({ freq: 220, to: 180, dur: 0.16, type: 'square', gain: 0.2 });
