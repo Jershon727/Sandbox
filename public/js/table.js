@@ -30,6 +30,19 @@ export const FEED_LINES = 40;
 /** The whole social vocabulary. Anything else a client sends is refused. */
 export const REACTIONS = ['😱', '🔥', '😂', '❄️', '👏', '💀'];
 
+/** Table talk: one message can't be longer than this. */
+export const CHAT_MAX = 120;
+
+/** How many chat lines survive a new deal, when the play-by-play is cleared. */
+export const CHAT_KEEP = 8;
+
+/** A chat message, cleaned for the table: trimmed, de-controlled, capped. */
+export function cleanChat(text) {
+  // eslint-disable-next-line no-control-regex
+  const clean = String(text ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return clean.slice(0, CHAT_MAX);
+}
+
 /**
  * A table is a game plus everything the players read about it: the account of
  * the round, the last round's results, and the projection built from all three.
@@ -119,9 +132,10 @@ export function step(table) {
 
 /** Apply a player's request. A new deal clears the previous round's paperwork. */
 export function request(table, playerId, intent) {
-  // Reactions are social, not gameplay: any seated player may send one at any
-  // moment, and they go straight into the account of the round rather than
-  // through the rules engine. Old clients render the line as plain text.
+  // Reactions and chat are social, not gameplay: any seated player may send
+  // one at any moment, and they go straight into the account of the round
+  // rather than through the rules engine. Old clients render both as plain
+  // text feed lines.
   if (intent?.do === 'react') {
     const player = table.game.byId(playerId);
     if (!player || !REACTIONS.includes(intent.emoji)) {
@@ -139,10 +153,29 @@ export function request(table, playerId, intent) {
     return { ok: true };
   }
 
+  if (intent?.do === 'chat') {
+    const player = table.game.byId(playerId);
+    const msg = cleanChat(intent.text);
+    if (!player || !msg) return { ok: false, why: 'bad-chat' };
+    player.lastSeen = Date.now();
+    noteFeed(table, {
+      text: `${player.name}: ${msg}`,
+      type: 'chat',
+      msg,
+      who: playerId,
+      to: playerId,
+      at: Date.now(),
+    });
+    reproject(table);
+    return { ok: true };
+  }
+
   const result = applyIntent(table.game, playerId, intent);
   if (result.ok && result.newRound) {
     table.lastRound = null;
-    table.feed = [];
+    // The play-by-play belongs to the round; table talk doesn't. Keep the tail
+    // of the conversation across the deal so chat doesn't vanish mid-sentence.
+    table.feed = table.feed.filter((l) => l.type === 'chat').slice(-CHAT_KEEP);
   }
   // A skipped or removed seat deserves a line: without one, a player who comes
   // back sees their hand banked — or their chair gone — with no explanation.

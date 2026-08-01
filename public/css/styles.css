@@ -3187,6 +3187,123 @@ input {
   transform: scale(1.2);
 }
 
+/* the chat door, wearing its unread count */
+.reactions__btn--chat {
+  position: relative;
+}
+
+.reactions__badge {
+  position: absolute;
+  top: -5px;
+  right: -3px;
+  min-width: 16px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  background: var(--hot);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 900;
+  line-height: 1.2;
+  text-align: center;
+}
+
+/* ── table chat ──────────────────────────────────────────────────────────── */
+
+.modal__panel--chat {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(440px, 100%);
+}
+
+.chat {
+  list-style: none;
+  margin: 0;
+  padding: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 120px;
+  max-height: min(44vh, 340px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.chat__line {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--ink-2);
+}
+
+.chat__name {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 800;
+  color: var(--ink);
+}
+
+.chat__line.is-mine .chat__name {
+  color: var(--volt);
+}
+
+.chat__msg {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.chat__empty {
+  align-self: center;
+  margin: auto;
+  font-size: 0.84rem;
+  color: var(--ink-3);
+}
+
+.chatbar {
+  display: flex;
+  gap: 8px;
+}
+
+.chatbar__input {
+  flex: 1;
+  min-width: 0;
+}
+
+.chatbar__send {
+  flex: none;
+}
+
+/* ── the advice's nerve ──────────────────────────────────────────────────── */
+
+/* Careful / Balanced / Wild, tucked inside the "why" expansion: the odds are
+   arithmetic, but where Hit becomes Stay is the player's call to tune. */
+.advice__nerve {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.advice__nerve-label {
+  flex: none;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+.seg--sm .seg__opt {
+  padding: 4px 10px;
+  font-size: 0.75rem;
+}
+
 /* ...and the emoji drifting up from the sender's scoreboard row. */
 .react-float {
   position: fixed;

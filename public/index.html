@@ -283,7 +283,7 @@
               </span>
               <span class="advice__foot">
                 <span class="advice__says">
-                  <small>Claude recommends</small>
+                  <small id="advice-mode">Claude recommends</small>
                   <b class="advice__rec" id="advice-rec">Hit</b>
                 </span>
                 <span class="advice__caret" aria-hidden="true">▾</span>
@@ -291,6 +291,12 @@
             </button>
             <div class="advice__why" id="advice-why" hidden>
               <p id="advice-reason"></p>
+              <!-- How bold the recommendation leans. The odds never move; the
+                   line between Hit and Stay is a matter of nerve. -->
+              <div class="advice__nerve">
+                <span class="advice__nerve-label">Your nerve</span>
+                <div class="seg seg--sm" id="advice-nerve" role="radiogroup" aria-label="Advice risk tolerance"></div>
+              </div>
               <p class="advice__caveat">
                 Counted from a full 94-card deck minus everything tapped this round. It can't see
                 earlier rounds, or Freeze and Flip Three cards, so treat it as a guide.
@@ -513,6 +519,26 @@
           </p>
         </div>
         <button class="btn btn--primary btn--xl" data-close>Got it</button>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-chat" hidden>
+      <div class="modal__panel modal__panel--chat" role="dialog" aria-modal="true" aria-label="Table chat">
+        <h3 class="modal__title">Table chat</h3>
+        <ol class="chat" id="chat-list"></ol>
+        <div class="chatbar">
+          <input
+            class="input chatbar__input"
+            id="chat-input"
+            type="text"
+            maxlength="120"
+            placeholder="Say something…"
+            autocomplete="off"
+            enterkeyhint="send"
+          />
+          <button class="btn btn--primary chatbar__send" id="chat-send">Send</button>
+        </div>
+        <button class="btn btn--ghost btn--sm" data-close>Close</button>
       </div>
     </div>
 

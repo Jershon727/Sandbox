@@ -187,7 +187,13 @@ export function expectedDelta(room, playerId) {
  * Hit or stay, with the reasoning behind it.
  * `target` and `myTotal` let it recognise a hand that already wins the game.
  */
-export function advise(room, playerId) {
+/**
+ * `caution` bends the hit-or-stay call to the player's nerve, exactly the way
+ * bot personalities bend theirs (ai.js): above 1 re-weights the downside so it
+ * folds earlier, below 1 shrugs at it. It never changes the odds themselves —
+ * the percentage is arithmetic; only the recommendation is a matter of taste.
+ */
+export function advise(room, playerId, { caution = 1 } = {}) {
   const player = room?.players?.[playerId];
   if (!player) return null;
 
@@ -249,7 +255,10 @@ export function advise(room, playerId) {
   const pct = Math.round(risk * 100);
   const chasing = uniques === FLIP7_TARGET - 1;
 
-  if (ev > 0) {
+  // The same lean the bots use: caution re-weights only what a bust would cost.
+  const lean = ev - (caution - 1) * risk * standing;
+
+  if (lean > 0) {
     return {
       move: 'hit',
       risk,

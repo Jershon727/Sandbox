@@ -22,7 +22,7 @@ import {
   hostAwayFor,
   HOST_AWAY_TAKEOVER,
 } from './room.js';
-import { REACTIONS } from './table.js';
+import { REACTIONS, CHAT_MAX, cleanChat } from './table.js';
 import { bustChance, riskBand } from './odds.js';
 import {
   settings,
@@ -70,6 +70,9 @@ const view = {
   armTimer: 0, // Hit/Stay stay inert for a beat after appearing
   lastReactAt: 0, // reactions are rate-limited to one a second
   seenReactions: null, // scorekeeping reaction ids already floated
+  lastChatAt: 0, // chat shares the one-a-second limit
+  seenChat: null, // scorekeeping chat ids already surfaced
+  chatUnread: 0, // messages arrived while the chat sheet was closed
   lastDeckLeft: null, // for nudging the deck when a card comes off it
   lastConn: null, // the connection pill's last painted state
   connTimer: 0, // hides the brief "Back online" pill
@@ -87,6 +90,7 @@ async function boot() {
   buildSettings();
   wireChrome();
   buildReactions();
+  buildChat();
   scorer.mount();
 
   store.subscribe(onState);
@@ -648,6 +652,9 @@ function leaveRoom() {
   store.leave();
   setHeartbeat(null);
   view.seenReactions = null;
+  view.seenChat = null;
+  view.chatUnread = 0;
+  paintChatBadge();
   view.lastDeckLeft = null;
   view.spectateSeen = null;
   view.lastConn = null;
@@ -737,6 +744,20 @@ function buildReactions() {
     btn.addEventListener('click', () => sendReaction(emoji));
     tray.append(btn);
   }
+
+  // The chat door lives at the end of the tray, wearing its unread count.
+  const chat = document.createElement('button');
+  chat.className = 'reactions__btn reactions__btn--chat';
+  chat.id = 'chat-open';
+  chat.type = 'button';
+  chat.setAttribute('aria-label', 'Open table chat');
+  const badge = document.createElement('span');
+  badge.className = 'reactions__badge';
+  badge.id = 'chat-badge';
+  badge.hidden = true;
+  chat.append(document.createTextNode('💬'), badge);
+  chat.addEventListener('click', openChat);
+  tray.append(chat);
 }
 
 function sendReaction(emoji) {
@@ -791,6 +812,141 @@ function floatReaction(playerId, emoji) {
   setTimeout(() => el.remove(), 1600 * speedFactor());
 }
 
+// ── table chat ────────────────────────────────────────────────────────────
+
+/** Wire the chat sheet: send on button or Enter. The 💬 button is built above. */
+function buildChat() {
+  $('chat-send').addEventListener('click', sendChat);
+  $('chat-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      sendChat();
+    }
+  });
+}
+
+const chatOpen = () => !$('modal-chat').hidden;
+
+function openChat() {
+  sfx.tap();
+  view.chatUnread = 0;
+  paintChatBadge();
+  renderChat(store.state);
+  openModal('chat');
+  $('chat-input').focus();
+}
+
+function paintChatBadge() {
+  const badge = $('chat-badge');
+  badge.hidden = !view.chatUnread;
+  badge.textContent = view.chatUnread > 9 ? '9+' : String(view.chatUnread);
+}
+
+function sendChat() {
+  const input = $('chat-input');
+  const text = cleanChat(input.value);
+  if (!text) return;
+  const now = Date.now();
+  // Same politeness budget as reactions: one a second.
+  if (now - view.lastChatAt < 1000) return;
+  view.lastChatAt = now;
+  input.value = '';
+
+  // Same two pipes as reactions: an intent when the dealer owns the feed, a
+  // small pruned write when the room is a shared object. Our own message comes
+  // back through the same watch as everyone else's, so there's one code path.
+  if (store.isDealt) {
+    store.intent({ do: 'chat', text });
+    return;
+  }
+  const who = store.actingId ?? store.myId;
+  const paths = { [`chat/${makeId()}`]: { who, msg: text, at: now } };
+  const all = Object.entries(store.state?.chat ?? {}).sort(
+    (a, b) => (a[1].at ?? 0) - (b[1].at ?? 0),
+  );
+  // Keep the room small: everything beyond the last 30 messages goes.
+  for (const [k] of all.slice(0, Math.max(0, all.length - 29))) paths[`chat/${k}`] = null;
+  store.update(paths);
+}
+
+/** Every message, oldest first, from whichever pipe this room uses. */
+function chatMessages(state) {
+  if (store.isDealt) {
+    return (state.feed ?? [])
+      .filter((l) => l.type === 'chat')
+      .map((l) => ({ id: `n${l.n}`, who: l.who, msg: l.msg ?? l.text, at: l.at ?? 0 }));
+  }
+  return Object.entries(state.chat ?? {})
+    .map(([k, c]) => ({ id: k, who: c.who, msg: c.msg, at: c.at ?? 0 }))
+    .sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+}
+
+/** Fill the sheet: monogram, name, message — newest at the bottom, in view. */
+function renderChat(state) {
+  if (!state) return;
+  const host = $('chat-list');
+  const messages = chatMessages(state);
+  host.replaceChildren();
+  if (!messages.length) {
+    const empty = document.createElement('li');
+    empty.className = 'chat__empty';
+    empty.textContent = 'Nothing yet — say something.';
+    host.append(empty);
+    return;
+  }
+  for (const m of messages) {
+    const player = state.players?.[m.who];
+    const li = document.createElement('li');
+    li.className = 'chat__line';
+    if (m.who === store.actingId) li.classList.add('is-mine');
+    const name = document.createElement('b');
+    name.className = 'chat__name';
+    name.append(monogram(player?.name ?? '?', player?.order ?? 0), document.createTextNode(player?.name ?? 'Someone'));
+    const text = document.createElement('span');
+    text.className = 'chat__msg';
+    text.textContent = m.msg ?? '';
+    li.append(name, text);
+    host.append(li);
+  }
+  host.scrollTop = host.scrollHeight;
+}
+
+/**
+ * A message arriving, from either pipe. Sheet open: the list refreshes. Sheet
+ * closed: somebody else's message becomes a toast and a badge tick, so table
+ * talk is noticeable without stealing the screen from the game.
+ */
+function incomingChat(state, who, msg) {
+  if (chatOpen()) {
+    renderChat(state);
+    return;
+  }
+  if (who === store.actingId || !msg) return;
+  view.chatUnread += 1;
+  paintChatBadge();
+  const name = state.players?.[who]?.name ?? 'Someone';
+  toast(`${name}: ${msg}`, 2600);
+  sfx.count();
+  buzz(10);
+}
+
+/** Scorekeeping chat arrives as room writes; surface each exactly once. */
+function renderChatWrites(state) {
+  if (store.isDealt) return; // dealt-mode chat arrives through the feed
+  const all = Object.keys(state.chat ?? {});
+  if (!view.seenChat) {
+    // Don't replay the backlog on join — it's all in the sheet already.
+    view.seenChat = new Set(all);
+    return;
+  }
+  for (const k of all) {
+    if (view.seenChat.has(k)) continue;
+    view.seenChat.add(k);
+    const m = state.chat[k];
+    incomingChat(state, m?.who, m?.msg);
+  }
+}
+
 // ── reacting to state ─────────────────────────────────────────────────────
 
 function onState(state) {
@@ -803,10 +959,12 @@ function onState(state) {
   renderConnection();
   scorer.render();
 
-  // Reactions make sense once there's a table to react to.
-  $('react-tray').hidden =
-    !!state.lobby || playerList(state).length < 2 || state.status === 'finished';
+  // Reactions and chat make sense once there's a table to talk to — the tray
+  // shows from the lobby on, so people can chat while seats fill.
+  $('react-tray').hidden = playerList(state).length < 2;
   renderReactions(state);
+  renderChatWrites(state);
+  if (chatOpen()) renderChat(state);
 
   renderDealt(state);
 
@@ -1301,6 +1459,10 @@ function announceWhatHappenedToMe(state) {
     // Table-wide beats first — these aren't aimed at anyone in particular.
     if (line.type === 'react') {
       floatReaction(line.who, line.emoji);
+      continue;
+    }
+    if (line.type === 'chat') {
+      incomingChat(state, line.who, line.msg ?? '');
       continue;
     }
     if (line.type === 'reshuffle') {

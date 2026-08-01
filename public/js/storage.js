@@ -31,6 +31,7 @@ const DEFAULT_SETTINGS = {
   effects: true,
   vibrate: true, // haptic ticks, where the device has a motor (iOS Safari doesn't)
   advice: true, // bust odds and the hit-or-stay suggestion
+  nerve: 'balanced', // careful | balanced | wild — how bold the advice leans
   speed: 'normal', // chill | normal | fast
   theme: 'auto', // auto follows the OS until someone picks a side
 };

@@ -27,7 +27,18 @@ import { advise } from './odds.js';
 import { toast, showBanner, buzz, reducedMotion } from './views.js';
 import { sfx } from './sound.js';
 import { burstFrom, celebrate, fxAllowed } from './fx.js';
-import { settings, speedFactor } from './storage.js';
+import { settings, saveSettings, speedFactor } from './storage.js';
+
+/**
+ * How bold the Bust-O-meter's advice leans. The caution factors are the same
+ * ones the bot personalities use (ai.js STYLES), so "Wild" advice plays like a
+ * wild bot would — it never changes the odds, only where Hit becomes Stay.
+ */
+const NERVE_OPTIONS = [
+  { key: 'careful', label: 'Careful', caution: 1.9, blurb: 'Banks early, hates a coin flip' },
+  { key: 'balanced', label: 'Balanced', caution: 1.0, blurb: 'Plays the plain odds' },
+  { key: 'wild', label: 'Wild', caution: 0.45, blurb: 'Chases the 7 — for when you need points' },
+];
 
 const MOD_KEYS = [
   { op: 'add', value: 2 },
@@ -77,8 +88,10 @@ export class Scorer {
       advicePct: id('advice-pct'),
       adviceBand: id('advice-band'),
       adviceRec: id('advice-rec'),
+      adviceMode: id('advice-mode'),
       adviceWhy: id('advice-why'),
       adviceReason: id('advice-reason'),
+      adviceNerve: id('advice-nerve'),
     };
 
     this.buildPad();
@@ -96,6 +109,36 @@ export class Scorer {
       this.el.adviceRow.setAttribute('aria-expanded', String(open));
       sfx.tap();
     });
+
+    this.buildNerve();
+  }
+
+  /**
+   * The advice's risk tolerance, set by the player. Last place wants to be
+   * told to push; a comfortable lead wants to be told to sit down — the odds
+   * are arithmetic, but where Hit becomes Stay is a matter of nerve.
+   */
+  buildNerve() {
+    const host = this.el.adviceNerve;
+    host.replaceChildren();
+    for (const opt of NERVE_OPTIONS) {
+      const btn = document.createElement('button');
+      btn.className = 'seg__opt';
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(settings.nerve === opt.key));
+      btn.textContent = opt.label;
+      btn.title = opt.blurb;
+      btn.addEventListener('click', (e) => {
+        // The whole advice row is a disclosure button; don't collapse it.
+        e.stopPropagation();
+        saveSettings({ nerve: opt.key });
+        sfx.tap();
+        this.buildNerve();
+        this.render();
+      });
+      host.append(btn);
+    }
   }
 
   // ── whose hand am I editing ─────────────────────────────────────────────
@@ -453,12 +496,16 @@ export class Scorer {
       return;
     }
 
-    const a = advise(this.store.state, target.id);
+    const nerve = NERVE_OPTIONS.find((n) => n.key === settings.nerve) ?? NERVE_OPTIONS[1];
+    const a = advise(this.store.state, target.id, { caution: nerve.caution });
     if (!a || a.move === 'none') {
       // Nothing to decide once the hand is busted or already at seven.
       el.advice.hidden = true;
       return;
     }
+    // Say which nerve the call was made on, so a Wild "Hit" reads as chosen.
+    el.adviceMode.textContent =
+      nerve.key === 'balanced' ? 'Claude recommends' : `Claude recommends · ${nerve.label.toLowerCase()}`;
 
     el.advice.hidden = false;
     el.advice.dataset.band = a.band;
