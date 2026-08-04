@@ -1,0 +1,132 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import {
+  createTable,
+  recoverStalledTurn,
+  request,
+  step,
+  REACTIONS,
+  CHAT_MAX,
+  CHAT_KEEP,
+  cleanChat,
+} from '../public/js/table.js';
+import { STALL_MS } from '../public/js/dealer.js';
+
+const newTable = () =>
+  createTable({
+    code: 'ABCD',
+    setup: { hostId: 'me', hostName: 'Jack', target: 200, bots: 1 },
+    deal: false,
+  });
+
+test('a reaction from a seated player lands in the feed and the projection', () => {
+  const table = newTable();
+  const result = request(table, 'me', { do: 'react', emoji: '🔥' });
+  assert.equal(result.ok, true);
+
+  const line = table.feed.at(-1);
+  assert.equal(line.type, 'react');
+  assert.equal(line.emoji, '🔥');
+  assert.equal(line.who, 'me');
+  // Renders as plain text on clients that predate reactions.
+  assert.match(line.text, /Jack 🔥/);
+  // The projection every phone reads carries it too.
+  assert.equal(table.room.feed.at(-1).emoji, '🔥');
+});
+
+test('reactions are limited to the shared vocabulary and to seated players', () => {
+  const table = newTable();
+  // Anything outside the tray is refused — a client can't inject arbitrary text.
+  assert.equal(request(table, 'me', { do: 'react', emoji: 'not-an-emoji' }).ok, false);
+  assert.equal(request(table, 'me', { do: 'react' }).ok, false);
+  // Somebody the dealer never seated can't heckle either.
+  assert.equal(request(table, 'ghost', { do: 'react', emoji: REACTIONS[0] }).ok, false);
+});
+
+test('a reaction is allowed off-turn and never advances the game', () => {
+  const table = newTable();
+  const bot = table.game.players.find((p) => p.isBot);
+  const before = {
+    phase: table.game.phase,
+    round: table.game.round,
+    deck: table.game.deck.length,
+  };
+  // From the lobby, where gameplay intents like hit/stay would be refused.
+  assert.equal(request(table, bot.id, { do: 'react', emoji: '😂' }).ok, true);
+  assert.deepEqual(
+    { phase: table.game.phase, round: table.game.round, deck: table.game.deck.length },
+    before,
+  );
+});
+
+test('reactions survive the round but a new deal clears them with the feed', () => {
+  const table = newTable();
+  request(table, 'me', { do: 'react', emoji: '👏' });
+  assert.equal(table.feed.length, 1);
+  assert.equal(request(table, 'me', { do: 'next-round' }).ok, true);
+  assert.equal(table.feed.length, 0);
+});
+
+test('a turn stuck behind a dead phone is banked with an honest account', () => {
+  // Seeded, so the deal is the same one the dealer tests settle on: the host
+  // is the person the dealer ends up waiting for.
+  const table = createTable({
+    code: 'ABCD',
+    setup: { hostId: 'me', hostName: 'Jack', target: 200, bots: 1, seed: 7 },
+    deal: false,
+  });
+  assert.equal(request(table, 'me', { do: 'next-round' }).ok, true);
+  for (let i = 0; i < 400 && step(table).delay !== null; i++);
+
+  // Still present (the host seat has no record, which counts as present).
+  assert.equal(recoverStalledTurn(table), false, 'a live phone is left alone');
+
+  table.game.byId('me').lastSeen = Date.now() - STALL_MS - 1;
+  assert.equal(recoverStalledTurn(table), true);
+  const line = table.feed.find((l) => l.type === 'stall');
+  assert.match(line.text, /Jack lost connection — banked \d+/);
+  assert.equal(line.to, 'me', 'aimed at the player it happened to');
+  assert.equal(table.room.players.me.state, 'stayed', 'banked, and the projection says so');
+});
+
+// ── table chat ────────────────────────────────────────────────────────────
+
+test('a chat message lands in the feed with the sender named', () => {
+  const table = newTable();
+  const result = request(table, 'me', { do: 'chat', text: '  nice hand  ' });
+  assert.equal(result.ok, true);
+  const line = table.feed.at(-1);
+  assert.equal(line.type, 'chat');
+  assert.equal(line.msg, 'nice hand', 'trimmed');
+  assert.equal(line.who, 'me');
+  assert.equal(line.text, 'Jack: nice hand', 'plain text for old clients');
+  assert.equal(table.room.feed.at(-1).msg, 'nice hand');
+});
+
+test('chat is cleaned: control characters out, length capped, empty refused', () => {
+  assert.equal(cleanChat('hey\u0000there\u001f!'), 'hey there !');
+  assert.equal(cleanChat('x'.repeat(500)).length, CHAT_MAX);
+  assert.equal(cleanChat('   '), '');
+  const table = newTable();
+  assert.equal(request(table, 'me', { do: 'chat', text: '   ' }).ok, false);
+  assert.equal(request(table, 'me', { do: 'chat' }).ok, false);
+  assert.equal(request(table, 'ghost', { do: 'chat', text: 'boo' }).ok, false);
+});
+
+test('chat survives a new deal; the play-by-play does not', () => {
+  const table = newTable();
+  for (let i = 0; i < CHAT_KEEP + 4; i++) {
+    request(table, 'me', { do: 'chat', text: `msg ${i}` });
+  }
+  assert.equal(request(table, 'me', { do: 'next-round' }).ok, true);
+  for (let i = 0; i < 400 && step(table).delay !== null; i++);
+
+  const chat = table.feed.filter((l) => l.type === 'chat');
+  assert.equal(chat.length, CHAT_KEEP, 'the tail of the conversation is kept');
+  assert.equal(chat.at(-1).msg, `msg ${CHAT_KEEP + 3}`);
+  assert.ok(
+    table.feed.some((l) => l.type !== 'chat'),
+    'the new round wrote its own account around it',
+  );
+});

@@ -13,6 +13,7 @@
 import {
   applyPaths,
   blankRoom,
+  isAway,
   makeRoomCode,
   makeId,
   newPlayer,
@@ -50,6 +51,10 @@ export class Store {
     this.mode = null; // 'local' | 'firebase'
     this.state = null;
     this.unwatch = null;
+    this.unwatchStatus = null;
+    // 'online' | 'offline' — whether the backend can currently be reached.
+    // Backends without live status (local, Firebase) always read as online.
+    this.connection = 'online';
     this.beat = 0;
     this.listeners = new Set();
     this.errorListeners = new Set();
@@ -208,7 +213,15 @@ export class Store {
     return !!this.actingId && this.state?.turnId === this.actingId;
   }
 
-  async host({ name, target = 200, mode = 'local', dealt = false, bots = 1, botStyle = 'mixed' }) {
+  async host({
+    name,
+    target = 200,
+    mode = 'local',
+    dealt = false,
+    bots = 1,
+    botStyle = 'mixed',
+    pressBets = false,
+  }) {
     const sync = await this._backend(mode);
     if (dealt && !sync.intent) {
       throw Object.assign(new Error('A dealt game needs the relay'), { code: 'needs-relay' });
@@ -224,7 +237,7 @@ export class Store {
         room = dealt
           ? await sync.create(code, null, {
               kind: 'dealt',
-              setup: { hostId, hostName: name, target, bots, botStyle },
+              setup: { hostId, hostName: name, target, bots, botStyle, pressBets },
             })
           : await sync.create(code, blankRoom({ code, target, hostId, hostName: name }));
       } catch (err) {
@@ -242,11 +255,17 @@ export class Store {
     return code;
   }
 
-  async join({ code, name, mode = 'firebase' }) {
+  /**
+   * `takeover: true` means the user has confirmed that a seat already playing
+   * under this name is theirs to take back. Without it, a name that matches a
+   * seat somebody is actively driving is refused with `seat-active`, so the UI
+   * can ask rather than letting two people silently share one hand.
+   */
+  async join({ code, name, mode = 'firebase', takeover = false }) {
     const clean = normalizeCode(code);
     const sync = await this._backend(mode);
     const myId = makeId();
-    const room = await sync.join(clean, { id: myId, name });
+    const room = await sync.join(clean, { id: myId, name, takeover });
     if (!room) {
       const err = new Error(`No game found with the code ${clean}`);
       err.code = 'room-missing';
@@ -258,6 +277,14 @@ export class Store {
     const existing = playerList(room).find(
       (p) => p.name.trim().toLowerCase() === name.trim().toLowerCase(),
     );
+    // In a dealt game the dealer makes this call itself; here the heartbeat is
+    // the evidence. A seat still beating belongs to somebody, so taking it over
+    // needs the user to say "that's me".
+    if (existing && room.kind !== 'dealt' && !takeover && !isAway(existing)) {
+      const err = new Error(`${existing.name} is already playing`);
+      err.code = 'seat-active';
+      throw err;
+    }
     // In a dealt game the dealer seats us and says which seat that was. Take its
     // word over our own guess: matching by name picks the wrong seat when two
     // people share one, and the seat the dealer is dealing to would then sit
@@ -319,6 +346,17 @@ export class Store {
       (error) => this._fail(error),
     );
 
+    // The wire itself, when the backend can report it. Rides the same pipe as
+    // room changes: the UI re-reads store.connection on every emit.
+    this.unwatchStatus?.();
+    this.connection = 'online';
+    this.unwatchStatus =
+      this.sync.watchStatus?.(this.code, (status) => {
+        if (status === this.connection) return;
+        this.connection = status;
+        this._emit();
+      }) ?? null;
+
     clearInterval(this.beat);
     this.beat = setInterval(() => this._touch(), HEARTBEAT);
     this._touch();
@@ -363,8 +401,9 @@ export class Store {
   /** Ask the dealer to do something on behalf of whoever is playing. */
   async intent(intent) {
     // Dealing the next round is the host's call, not the last player's — which
-    // on a shared phone are different people.
-    const hostOnly = intent?.do === 'next-round' || intent?.do === 'rematch';
+    // on a shared phone are different people. Same for moving the game past a
+    // vanished player, or clearing their seat.
+    const hostOnly = ['next-round', 'rematch', 'skip', 'remove-seat'].includes(intent?.do);
     const who = hostOnly ? this.myId : this.actingId;
     if (!this.sync?.intent || !this.code || !who) return;
     try {
@@ -405,8 +444,11 @@ export class Store {
   leave() {
     clearInterval(this.beat);
     this.unwatch?.();
+    this.unwatchStatus?.();
     this.sync?.close?.();
     this.unwatch = null;
+    this.unwatchStatus = null;
+    this.connection = 'online';
     this.sync = null;
     this.state = null;
     this.code = null;

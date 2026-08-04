@@ -15,7 +15,7 @@ export function createCard(card) {
     el.dataset.value = String(card.value);
     el.style.setProperty('--c', `var(--n${card.value})`);
     if (card.value >= 10) el.dataset.wide = '';
-    el.append(value(String(card.value)));
+    el.append(corner(String(card.value)), value(String(card.value)));
     el.setAttribute('aria-label', `${card.value}`);
     return el;
   }
@@ -42,6 +42,15 @@ function value(text) {
   return span;
 }
 
+/* small top-left index, like a real playing card */
+function corner(text) {
+  const span = document.createElement('span');
+  span.className = 'card__corner';
+  span.setAttribute('aria-hidden', 'true');
+  span.textContent = text;
+  return span;
+}
+
 function tag(text) {
   const span = document.createElement('span');
   span.className = 'card__tag';
@@ -64,15 +73,25 @@ function icon(href) {
  * the key that was tapped). Measuring after insertion means the card lands in
  * exactly the right place no matter how the hand reflowed.
  */
-export function dealFrom(cardEl, sourceEl) {
+export function dealFrom(cardEl, sourceEl, delayMs = 0) {
   const to = cardEl.getBoundingClientRect();
   const from = sourceEl?.getBoundingClientRect?.();
   const dx = from ? from.left + from.width / 2 - (to.left + to.width / 2) : 0;
   const dy = from ? from.top + from.height / 2 - (to.top + to.height / 2) : -70;
   cardEl.style.setProperty('--dx', `${Math.round(dx)}px`);
   cardEl.style.setProperty('--dy', `${Math.round(dy)}px`);
+  // A Flip Three lands as a little cascade, not a clump — the stylesheet passes
+  // the delay through to the card-back reveal too.
+  if (delayMs) cardEl.style.animationDelay = `${Math.round(delayMs)}ms`;
   cardEl.classList.add('is-new');
-  cardEl.addEventListener('animationend', () => cardEl.classList.remove('is-new'), { once: true });
+  cardEl.addEventListener(
+    'animationend',
+    () => {
+      cardEl.classList.remove('is-new');
+      cardEl.style.animationDelay = '';
+    },
+    { once: true },
+  );
 }
 
 /** Seven dots that fill as a hand approaches Flip 7. */

@@ -20,10 +20,28 @@ import {
   publicCard,
   roundResults,
   seatsFor,
+  settleSeat,
+  stalledTurn,
 } from './dealer.js';
 
 /** How much of the round's account to keep. Enough to scroll back a turn or two. */
 export const FEED_LINES = 40;
+
+/** The whole social vocabulary. Anything else a client sends is refused. */
+export const REACTIONS = ['😱', '🔥', '😂', '❄️', '👏', '💀'];
+
+/** Table talk: one message can't be longer than this. */
+export const CHAT_MAX = 120;
+
+/** How many chat lines survive a new deal, when the play-by-play is cleared. */
+export const CHAT_KEEP = 8;
+
+/** A chat message, cleaned for the table: trimmed, de-controlled, capped. */
+export function cleanChat(text) {
+  // eslint-disable-next-line no-control-regex
+  const clean = String(text ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+  return clean.slice(0, CHAT_MAX);
+}
 
 /**
  * A table is a game plus everything the players read about it: the account of
@@ -40,6 +58,7 @@ export function createTable({ code, setup, deal = false }) {
     target: Number(setup.target) || 200,
     seed: setup.seed,
     deal,
+    pressBets: setup.pressBets === true,
   });
   const table = { code, game, feed: [], seq: 0, lastRound: null, room: null };
   reproject(table);
@@ -77,6 +96,9 @@ export function recordEvents(table, events) {
       who: event.playerId ?? null,
       to: event.targetId ?? event.playerId ?? null,
       ...(event.score === undefined ? {} : { score: event.score }),
+      ...(event.wager === undefined ? {} : { wager: event.wager }),
+      ...(event.payout === undefined ? {} : { payout: event.payout }),
+      ...(event.stake === undefined ? {} : { stake: event.stake }),
       ...(event.card ? { card: publicCard(event.card) } : {}),
     });
   }
@@ -114,13 +136,116 @@ export function step(table) {
 
 /** Apply a player's request. A new deal clears the previous round's paperwork. */
 export function request(table, playerId, intent) {
+  // Reactions and chat are social, not gameplay: any seated player may send
+  // one at any moment, and they go straight into the account of the round
+  // rather than through the rules engine. Old clients render both as plain
+  // text feed lines.
+  if (intent?.do === 'react') {
+    const player = table.game.byId(playerId);
+    if (!player || !REACTIONS.includes(intent.emoji)) {
+      return { ok: false, why: 'bad-reaction' };
+    }
+    player.lastSeen = Date.now();
+    noteFeed(table, {
+      text: `${player.name} ${intent.emoji}`,
+      type: 'react',
+      emoji: intent.emoji,
+      who: playerId,
+      to: playerId,
+    });
+    reproject(table);
+    return { ok: true };
+  }
+
+  if (intent?.do === 'chat') {
+    const player = table.game.byId(playerId);
+    const msg = cleanChat(intent.text);
+    if (!player || !msg) return { ok: false, why: 'bad-chat' };
+    player.lastSeen = Date.now();
+    noteFeed(table, {
+      text: `${player.name}: ${msg}`,
+      type: 'chat',
+      msg,
+      who: playerId,
+      to: playerId,
+      at: Date.now(),
+    });
+    reproject(table);
+    return { ok: true };
+  }
+
   const result = applyIntent(table.game, playerId, intent);
   if (result.ok && result.newRound) {
     table.lastRound = null;
-    table.feed = [];
+    // The play-by-play belongs to the round; table talk doesn't. Keep the tail
+    // of the conversation across the deal so chat doesn't vanish mid-sentence.
+    table.feed = table.feed.filter((l) => l.type === 'chat').slice(-CHAT_KEEP);
+  }
+  // A skipped or removed seat deserves a line: without one, a player who comes
+  // back sees their hand banked — or their chair gone — with no explanation.
+  if (result.ok && result.skipped) {
+    const name = table.game.byId(result.skipped)?.name ?? 'They';
+    if (result.settled.did === 'stay') {
+      noteFeed(table, {
+        text: `${name} was skipped — banked ${result.settled.score}.`,
+        type: 'stall',
+        who: result.skipped,
+        to: result.skipped,
+        score: result.settled.score,
+      });
+    } else {
+      noteFeed(table, {
+        text: `${name} was skipped — the dealer aimed their card.`,
+        type: 'stall',
+        who: result.skipped,
+        to: result.skipped,
+      });
+      recordEvents(table, result.settled.events);
+    }
+  }
+  if (result.ok && result.removed) {
+    noteFeed(table, {
+      text: `${result.removedName} was removed from the table.`,
+      type: 'leave',
+      who: result.removed,
+      to: result.removed,
+    });
   }
   if (result.ok) reproject(table);
   return result;
+}
+
+/**
+ * The stall timer's payoff: the whole table is stuck behind a seat whose phone
+ * has gone silent, so bank that hand and say why. Runs wherever the dealer
+ * runs — the relay's timer calls it on a schedule; a test calls it with a
+ * clock of its own. Returns whether anything was recovered.
+ */
+export function recoverStalledTurn(table, now = Date.now()) {
+  const playerId = stalledTurn(table.game, now);
+  if (!playerId) return false;
+  const player = table.game.byId(playerId);
+  const settled = settleSeat(table.game, playerId);
+  if (!settled) return false;
+  if (settled.did === 'stay') {
+    noteFeed(table, {
+      text: `${player.name} lost connection — banked ${settled.score}.`,
+      type: 'stall',
+      who: playerId,
+      to: playerId,
+      score: settled.score,
+    });
+  } else {
+    noteFeed(table, {
+      text: `${player.name} lost connection — the dealer aimed their card.`,
+      type: 'stall',
+      who: playerId,
+      to: playerId,
+    });
+    recordEvents(table, settled.events);
+  }
+  reproject(table);
+  return true;
 }
 
 /**

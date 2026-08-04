@@ -244,3 +244,20 @@ test('the advice never contradicts itself on hit versus stay', () => {
     said = a.move;
   }
 });
+
+test('caution bends the call without touching the odds', () => {
+  // Two hands that sit either side of the plain-odds line. Careful folds a
+  // hand the plain call would push; wild pushes one it would fold. The
+  // percentage itself never moves — nerve is taste, not arithmetic.
+  const lean = () => solo(hand([8, 7, 6])); // plain: hit
+  assert.equal(advise(lean(), 'me').move, 'hit');
+  const careful = advise(lean(), 'me', { caution: 1.9 });
+  assert.equal(careful.move, 'stay', 'the careful call banks it');
+  assert.equal(careful.risk, advise(lean(), 'me').risk, 'odds unchanged');
+
+  const fat = () => solo(hand([10, 9, 8])); // plain: stay
+  assert.equal(advise(fat(), 'me').move, 'stay');
+  const wild = advise(fat(), 'me', { caution: 0.45 });
+  assert.equal(wild.move, 'hit', 'the wild call pushes it');
+  assert.equal(wild.risk, advise(fat(), 'me').risk, 'odds unchanged');
+});

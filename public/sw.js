@@ -7,12 +7,13 @@
  * with no signal still opens and can keep score on its own.
  */
 
-const CACHE = 'flip7-v9';
+const CACHE = 'flip7-v17';
 
 const SHELL = [
   '.',
   'index.html',
   'css/styles.css',
+  'fonts/outfit-latin.woff2',
   'icon.svg',
   'manifest.webmanifest',
   'firebase-config.js',
@@ -36,6 +37,7 @@ const SHELL = [
   'js/views.js',
   'js/storage.js',
   'js/cardview.js',
+  'js/avatar.js',
 ];
 
 self.addEventListener('install', (event) => {

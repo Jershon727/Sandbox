@@ -6,7 +6,7 @@
     <title>Flip 7 — keep score together</title>
     <meta
       name="description"
-      content="Keep score for Flip 7 while you play with real cards. Host a room, everyone joins on their own phone, and the scores stay in step."
+      content="Play Flip 7 together. The app deals full games — online with friends and bots, or passing one phone round — and keeps score when you play with a real deck."
     />
     <meta name="theme-color" content="#0a0918" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -14,12 +14,7 @@
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icon.svg" />
     <link rel="manifest" href="manifest.webmanifest" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;700;800;900&display=swap"
-    />
+    <link rel="preload" href="fonts/outfit-latin.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="css/styles.css" />
   </head>
   <body>
@@ -94,7 +89,7 @@
               <span class="logo__word">Flip</span>
               <span class="logo__seven" aria-hidden="true">7</span>
             </h1>
-            <p class="logo__tag">Play with real cards.<br />Let your phones do the maths.</p>
+            <p class="logo__tag">Deal a game in the app,<br />or keep score for a real deck.</p>
           </div>
 
           <div class="modes">
@@ -153,8 +148,10 @@
               maxlength="14"
               autocomplete="off"
               placeholder="Your name"
+              aria-describedby="host-error"
             />
           </label>
+          <p class="field__error" id="host-error" role="alert"></p>
 
           <div class="field">
             <span class="field__label">Play to</span>
@@ -176,6 +173,12 @@
             <span class="field__label">How they play</span>
             <div class="seg" id="host-botstyle" role="radiogroup" aria-label="Bot style"></div>
             <p class="field__hint" id="host-botstyle-hint"></p>
+          </div>
+
+          <div class="field" id="field-press" hidden>
+            <span class="field__label">Press bets</span>
+            <div class="seg" id="host-press" role="radiogroup" aria-label="Press bets house rule"></div>
+            <p class="field__hint" id="host-press-hint"></p>
           </div>
 
           <div class="field" id="field-mode">
@@ -244,9 +247,17 @@
             <span class="roomchip__meta" id="room-meta">round 1</span>
           </button>
           <button class="icon-btn" data-open="rules" aria-label="How to play">?</button>
+          <!-- The wire, when it matters: "Reconnecting…" while the socket is
+               down, a brief "Back online" when it returns. -->
+          <span class="connpill" id="conn-pill" hidden role="status">Reconnecting…</span>
         </header>
 
         <div class="standings" id="standings" aria-label="Scores"></div>
+
+        <!-- The social layer: one tap sends an emoji floating up from your row
+             on every phone at the table. Buttons are built from the shared
+             REACTIONS list so client and dealer can't disagree. -->
+        <div class="reactions" id="react-tray" hidden role="group" aria-label="Send a reaction"></div>
 
         <p class="roomhint" id="room-hint" hidden></p>
 
@@ -271,6 +282,7 @@
               <span class="meter" aria-hidden="true">
                 <span class="meter__top">
                   <span class="meter__label">Bust-O-meter</span>
+                  <span class="meter__band" id="advice-band"></span>
                   <span class="meter__pct" id="advice-pct">0%</span>
                 </span>
                 <span class="meter__track">
@@ -279,7 +291,7 @@
               </span>
               <span class="advice__foot">
                 <span class="advice__says">
-                  <small>Claude recommends</small>
+                  <small id="advice-mode">Confucius says</small>
                   <b class="advice__rec" id="advice-rec">Hit</b>
                 </span>
                 <span class="advice__caret" aria-hidden="true">▾</span>
@@ -287,6 +299,12 @@
             </button>
             <div class="advice__why" id="advice-why" hidden>
               <p id="advice-reason"></p>
+              <!-- How bold the recommendation leans. The odds never move; the
+                   line between Hit and Stay is a matter of nerve. -->
+              <div class="advice__nerve">
+                <span class="advice__nerve-label">Your nerve</span>
+                <div class="seg seg--sm" id="advice-nerve" role="radiogroup" aria-label="Advice risk tolerance"></div>
+              </div>
               <p class="advice__caveat">
                 Counted from a full 94-card deck minus everything tapped this round. It can't see
                 earlier rounds, or Freeze and Flip Three cards, so treat it as a guide.
@@ -298,6 +316,22 @@
         <div class="pad" id="pad"></div>
 
         <div class="dealt" id="dealt" hidden>
+          <!-- Somebody else's turn, watchable: their face-up cards, their total,
+               and their live bust odds. Every card in Flip 7 is public. -->
+          <div class="spectate" id="spectate" hidden>
+            <div class="spectate__head">
+              <span class="spectate__who" id="spectate-who"></span>
+              <span class="spectate__stat" id="spectate-stat"></span>
+            </div>
+            <div class="spectate__cards" id="spectate-cards"></div>
+          </div>
+
+          <!-- The deck itself, face down with a running count. Cards visibly
+               come off it, and it riffles when the discard is shuffled back in. -->
+          <div class="deckrow" id="deck-row" hidden>
+            <span class="deck" id="deck" aria-hidden="true">7</span>
+            <span class="deckline" id="deck-count">94 cards left</span>
+          </div>
           <ol class="feed" id="feed" aria-live="polite" aria-label="What just happened"></ol>
 
           <!-- An action card you have to aim. The card is shown because being told
@@ -307,7 +341,24 @@
             <p class="aim__text" id="aim-text"></p>
           </div>
 
+          <!-- The Press bet house rule: wager points that the next card won't
+               bust you, at a payout set by the exact odds you're taking. -->
+          <div class="press" id="press" hidden>
+            <span class="press__label" id="press-label">Press a bet</span>
+            <div class="press__chips" id="press-chips"></div>
+          </div>
+
           <p class="dealt__status" id="dealt-status">Dealing…</p>
+
+          <!-- The table is stuck behind a phone that went quiet. The dealer
+               banks that hand by itself after 45 seconds; the host can do it
+               now, or clear the seat of somebody who's never coming back. -->
+          <div class="stallrow" id="stall" hidden>
+            <span class="stallrow__note" id="stall-note"></span>
+            <button class="btn btn--ghost btn--sm" id="btn-stall-skip">Bank their hand</button>
+            <button class="btn btn--danger btn--sm" id="btn-stall-remove">Remove them</button>
+          </div>
+
           <div class="dealt__actions" id="dealt-actions">
             <button class="btn btn--stay" id="btn-dstay">
               <span class="btn__label">Stay</span>
@@ -319,6 +370,8 @@
             </button>
           </div>
           <button class="btn btn--primary btn--xl" id="btn-deal-next" hidden>Deal the next round</button>
+          <!-- On the bench (didn't ready up for this game) — back in any time. -->
+          <button class="btn btn--ghost" id="btn-dealin" hidden>Deal me in from the next round</button>
         </div>
 
         <div class="tally__foot">
@@ -341,6 +394,7 @@
         aria-label="Round summary"
       >
         <h3 class="modal__title" id="round-title">Round 1</h3>
+        <p class="modal__lede modal__lede--tied" id="round-note" hidden></p>
         <div class="scores" id="round-scores"></div>
         <button class="btn btn--primary btn--xl" data-close id="btn-next-round">
           Next round
@@ -354,7 +408,11 @@
         <h3 class="modal__title" id="over-title">Winner</h3>
         <p class="modal__lede" id="over-sub"></p>
         <div class="scores" id="over-scores"></div>
+        <!-- The next game is opt-in: ready up and you're dealt in; stay quiet
+             and you keep your seat on the bench. No new room needed. -->
+        <p class="over__ready" id="over-ready" hidden></p>
         <div class="modal__actions">
+          <button class="btn btn--primary" id="btn-ready" hidden>I'm in for another</button>
           <button class="btn btn--primary btn--xl" id="btn-rematch">Play again</button>
           <button class="btn btn--ghost" id="btn-leave-over">Leave the room</button>
         </div>
@@ -409,15 +467,38 @@
           </p>
 
           <h4>Using this app</h4>
-          <p>
-            Deal as normal with the real cards. As each card lands in front of you, tap it on your
-            phone — everyone at the table sees the scores update. When the round is over, the host
-            taps <b>End round</b> and every hand banks at once.
-          </p>
-          <p class="prose__note">
-            Numbers you already hold are ringed on the keypad. Tapping a ringed number is your
-            bust — the same thing that just happened on the table.
-          </p>
+          <div id="rules-real">
+            <p>
+              Deal as normal with the real cards. As each card lands in front of you, tap it on your
+              phone — everyone at the table sees the scores update. When the round is over, the host
+              taps <b>End round</b> and every hand banks at once.
+            </p>
+            <p class="prose__note">
+              Numbers you already hold are ringed on the keypad. Tapping a ringed number is your
+              bust — the same thing that just happened on the table.
+            </p>
+          </div>
+          <div id="rules-dealt" hidden>
+            <p>
+              The app shuffles and deals. On your turn, tap <b>Hit</b> for another card or
+              <b>Stay</b> to bank what you're holding. When everyone has banked, busted or hit
+              Flip&nbsp;7, the host deals the next round.
+            </p>
+            <p class="prose__note">
+              Draw a Freeze or Flip Three and you aim it yourself: tap a name on the scoreboard,
+              then tap it again to confirm. The Bust-O-meter below your hand counts the exact
+              remaining deck.
+            </p>
+            <p class="prose__note" id="rules-press" hidden>
+              <b>Press bets</b> (house rule, on in this game) — before a hit, wager 5, 10 or 15
+              points that the card won't bust you. Bust and the wager comes off your total —
+              below zero if it must; survive and it pays out at the exact odds you took, priced
+              from the remaining deck. One bet rides each card, and every hit can carry a fresh
+              one — double down as your hand fattens. And once you're out — busted or frozen —
+              you can put 5 on somebody still playing to post the round's best score: tap their
+              name, confirm, and collect 10 if your horse comes in.
+            </p>
+          </div>
 
           <h4>Scoring</h4>
           <ul>
@@ -468,6 +549,38 @@
           </p>
         </div>
         <button class="btn btn--primary btn--xl" data-close>Got it</button>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-chat" hidden>
+      <div class="modal__panel modal__panel--chat" role="dialog" aria-modal="true" aria-label="Table chat">
+        <h3 class="modal__title">Table chat</h3>
+        <ol class="chat" id="chat-list"></ol>
+        <div class="chatbar">
+          <input
+            class="input chatbar__input"
+            id="chat-input"
+            type="text"
+            maxlength="120"
+            placeholder="Say something…"
+            autocomplete="off"
+            enterkeyhint="send"
+          />
+          <button class="btn btn--primary chatbar__send" id="chat-send">Send</button>
+        </div>
+        <button class="btn btn--ghost btn--sm" data-close>Close</button>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-claim" hidden>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-label="That name is taken">
+        <h3 class="modal__title" id="claim-title">That name is playing</h3>
+        <p class="modal__lede" id="claim-lede"></p>
+        <div class="modal__actions">
+          <button class="btn btn--primary" id="claim-rejoin">That's me — rejoin</button>
+          <button class="btn btn--ghost" id="claim-fresh">Join with a new name</button>
+          <button class="btn btn--ghost" data-close>Cancel</button>
+        </div>
       </div>
     </div>
 

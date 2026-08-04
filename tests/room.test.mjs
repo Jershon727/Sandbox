@@ -17,12 +17,16 @@ import {
   playerList,
   standings,
   isAway,
+  hostAwayFor,
+  HOST_AWAY_TAKEOVER,
   roundStarted,
   roundLooksDone,
   nextOrder,
   endRoundUpdates,
   rematchUpdates,
+  tiedLeaders,
   applyPaths,
+  canRailbird,
 } from '../public/js/room.js';
 
 /** Deterministic stand-in for Math.random. */
@@ -157,6 +161,18 @@ test('a quiet phone reads as away', () => {
   assert.equal(isAway({}, now), true, 'never seen counts as away');
 });
 
+test('a vanished host eventually forfeits the end-round button', () => {
+  const now = 1_000_000_000;
+  const room = blankRoom({ code: 'ABCD', hostId: 'h', hostName: 'Jack', now });
+  assert.equal(hostAwayFor(room, now), 0, 'a fresh room has a present host');
+  assert.ok(
+    hostAwayFor(room, now + HOST_AWAY_TAKEOVER - 1) < HOST_AWAY_TAKEOVER,
+    'not handed over a moment early',
+  );
+  assert.ok(hostAwayFor(room, now + HOST_AWAY_TAKEOVER) >= HOST_AWAY_TAKEOVER);
+  assert.equal(hostAwayFor({ players: {} }, now), 0, 'no host, no takeover clock');
+});
+
 test('seats are assigned after the highest one taken', () => {
   assert.equal(nextOrder(roomWith({})), 0);
   assert.equal(nextOrder(roomWith({ a: { order: 0 }, b: { order: 3 } })), 4);
@@ -259,6 +275,31 @@ test('a tie at the finish line plays on', () => {
   assert.ok(!('status' in paths), 'the game is not over');
   assert.equal(tied.length, 2);
   assert.equal(paths.round, 2);
+
+  // Every phone reads the same tie off the published summary — the host isn't
+  // the only one who can know why another round is being dealt.
+  const fromResults = tiedLeaders(paths.lastRound.results, room.target);
+  assert.deepEqual(
+    fromResults.map((r) => r.name).sort(),
+    ['A', 'B'],
+  );
+  assert.equal(fromResults[0].total, 202);
+});
+
+test('tiedLeaders only reports a tie that forces another round', () => {
+  const results = (totals) => totals.map((total, i) => ({ id: `p${i}`, name: `P${i}`, total }));
+
+  // Nobody past the target: level scores are just level scores.
+  assert.equal(tiedLeaders(results([120, 120]), 200), null);
+  // A clear winner is not a tie.
+  assert.equal(tiedLeaders(results([212, 196]), 200), null);
+  // Past the target together, level at the top.
+  assert.equal(tiedLeaders(results([212, 212, 40]), 200).length, 2);
+  // Second place matching itself doesn't matter — only the top spot does.
+  assert.equal(tiedLeaders(results([212, 205, 205]), 200), null);
+  // Degenerate inputs stay quiet.
+  assert.equal(tiedLeaders([], 200), null);
+  assert.equal(tiedLeaders(results([212, 212]), 0), null);
 });
 
 test('clearing the target with the top score, but not alone, is not a win', () => {
@@ -341,4 +382,30 @@ test('a fresh player joins with nothing banked', () => {
   assert.deepEqual(p.history, []);
   assert.deepEqual(p.hand, emptyHand());
   assert.equal(p.lastSeen, 500);
+});
+
+test('the railbird window opens only for the dead, funded, and unbet', () => {
+  const dealtRoom = (me) => ({
+    kind: 'dealt',
+    pressBets: true,
+    status: 'playing',
+    lobby: false,
+    roundOver: false,
+    players: {
+      me: { name: 'Me', order: 0, total: 40, state: 'busted', ...me },
+      horse: { name: 'H', order: 1, total: 10, state: 'active' },
+    },
+  });
+
+  assert.equal(canRailbird(dealtRoom({}), 'me'), true);
+  assert.equal(canRailbird(dealtRoom({ state: 'frozen' }), 'me'), true, 'frozen counts as out');
+  assert.equal(canRailbird(dealtRoom({ state: 'active' }), 'me'), false, 'still playing');
+  assert.equal(canRailbird(dealtRoom({ state: 'stayed' }), 'me'), false, 'banked is not out');
+  assert.equal(canRailbird(dealtRoom({ total: 0 }), 'me'), true, 'broke still bets — totals can go negative');
+  assert.equal(canRailbird(dealtRoom({ railbird: { targetId: 'horse' } }), 'me'), false, 'bet down');
+  assert.equal(canRailbird({ ...dealtRoom({}), pressBets: false }, 'me'), false, 'rule off');
+  assert.equal(canRailbird({ ...dealtRoom({}), roundOver: true }, 'me'), false, 'round closed');
+  const noHorse = dealtRoom({});
+  noHorse.players.horse.state = 'stayed';
+  assert.equal(canRailbird(noHorse, 'me'), false, 'nobody left to back');
 });

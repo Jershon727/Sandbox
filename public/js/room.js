@@ -118,8 +118,38 @@ export function standings(room) {
     );
 }
 
+/**
+ * May this player place a railbird bet right now? Out of the round — busted or
+ * frozen — while it runs on, with the house rule on, points to stake, no bet
+ * already down, and somebody still alive to back. Shared between the standings
+ * (which take the tap) and the prompt row (which explains it).
+ */
+export function canRailbird(room, playerId) {
+  if (room?.kind !== 'dealt' || room.pressBets !== true) return false;
+  if (room.lobby || room.roundOver || room.status !== 'playing') return false;
+  const me = room.players?.[playerId];
+  if (!me || me.waiting || me.railbird) return false;
+  if (me.state !== 'busted' && me.state !== 'frozen') return false;
+  return playerList(room).some((p) => p.id !== playerId && !p.waiting && p.state === 'active');
+}
+
 export function isAway(player, now = Date.now()) {
   return now - (player.lastSeen ?? 0) > AWAY_AFTER;
+}
+
+/** How long the host must be silent before anyone may end the round for them. */
+export const HOST_AWAY_TAKEOVER = 120_000;
+
+/**
+ * How long the host's phone has been quiet. Scorekeeping only: the host is the
+ * one person who can end a round, so a host in a dead spot would otherwise
+ * strand the whole table mid-round. Past HOST_AWAY_TAKEOVER, anybody may press
+ * their button for them.
+ */
+export function hostAwayFor(room, now = Date.now()) {
+  const host = room?.players?.[room?.hostId];
+  if (!host) return 0;
+  return Math.max(0, now - (host.lastSeen ?? 0));
 }
 
 /** Has anyone touched a card this round? */
@@ -135,6 +165,19 @@ export function roundLooksDone(room) {
   const list = playerList(room);
   if (!list.length) return false;
   return list.every((p) => p.hand.busted || p.hand.numbers.length >= FLIP7_TARGET);
+}
+
+/**
+ * Level at the finish line: the players forcing a tiebreak round, or null.
+ * Works on the published round results, so every phone — host or not, dealt or
+ * scorekeeping — reads the same tie off the same summary.
+ */
+export function tiedLeaders(results, target) {
+  if (!target || !results?.length) return null;
+  const best = Math.max(...results.map((r) => r.total ?? 0));
+  if (best < target) return null;
+  const leaders = results.filter((r) => (r.total ?? 0) === best);
+  return leaders.length > 1 ? leaders : null;
 }
 
 export function nextOrder(room) {

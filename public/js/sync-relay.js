@@ -70,6 +70,13 @@ export async function createRelaySync(config) {
   /** One live connection per room code. */
   const links = new Map();
 
+  /** Tell whoever is watching that the wire changed state. */
+  function setStatus(link, status) {
+    if (link.status === status) return;
+    link.status = status;
+    link.onStatus?.(status);
+  }
+
   function connect(code) {
     if (links.has(code)) return links.get(code);
 
@@ -79,6 +86,8 @@ export async function createRelaySync(config) {
       room: null,
       onChange: null,
       onError: null,
+      onStatus: null,
+      status: null, // 'online' | 'offline' — null until the first connection
       closed: false,
       queue: [], // updates made while briefly offline
       ready: null,
@@ -94,6 +103,7 @@ export async function createRelaySync(config) {
       link.ready = new Promise((resolve, reject) => {
         socket.addEventListener('open', () => {
           link.attempt = 0;
+          setStatus(link, 'online');
           // Only re-announce on a reconnect. On the first connection the caller
           // is about to send create or join itself, and a premature join would
           // come back as "no such room" for a room being created right now.
@@ -130,6 +140,9 @@ export async function createRelaySync(config) {
 
       socket.addEventListener('close', () => {
         if (link.closed) return;
+        // Say so while we quietly retry — the difference between "the app is
+        // ignoring my taps" and "my wifi dropped" is exactly this signal.
+        setStatus(link, 'offline');
         const wait = RETRY_MS[Math.min(link.attempt++, RETRY_MS.length - 1)];
         setTimeout(open, wait);
       });
@@ -219,6 +232,21 @@ export async function createRelaySync(config) {
     /** Which seat this device was given, when the server was the one to decide. */
     seatedAs(code) {
       return links.get(code)?.you ?? null;
+    },
+
+    /**
+     * Whether this device can currently reach the relay, live. The store turns
+     * it into the "Reconnecting…" pill; backends without this method are
+     * assumed connected (localStorage can't drop out). Reports 'online' until
+     * the first drop so joining doesn't open on a flash of "Reconnecting…".
+     */
+    watchStatus(code, onStatus) {
+      const link = connect(code);
+      link.onStatus = onStatus;
+      onStatus(link.status ?? 'online');
+      return () => {
+        if (link.onStatus === onStatus) link.onStatus = null;
+      };
     },
 
     watch(code, onChange, onError) {

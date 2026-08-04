@@ -15,6 +15,7 @@
 import { makeRng } from './rng.js';
 import { buildDeck } from './cards.js';
 import { scoreHand, FLIP7_BONUS, FLIP7_TARGET } from './scoring.js';
+import { tallyOf, bustChanceOf } from './odds.js';
 
 export const Status = {
   ACTIVE: 'active',
@@ -26,13 +27,20 @@ export const Status = {
 
 export { FLIP7_BONUS, FLIP7_TARGET };
 
+/** The railbird bet: flat stakes, one per round, for players out of the round. */
+export const RAIL_STAKE = 5;
+export const RAIL_WIN = 10;
+
 /** A player is done for the round unless they're active. */
 export const isOut = (p) => p.status !== Status.ACTIVE;
 
 export class Flip7Game {
-  constructor({ players, targetScore = 200, seed } = {}) {
+  constructor({ players, targetScore = 200, seed, pressBets = false } = {}) {
     this.rng = makeRng(seed);
     this.targetScore = targetScore;
+    // House rule: before a hit, a player may wager points that the next card
+    // won't bust them. Off by default — the host turns it on.
+    this.pressBets = !!pressBets;
     this.players = players.map((p, i) => ({
       id: p.id ?? `p${i}`,
       name: p.name ?? `Player ${i + 1}`,
@@ -48,6 +56,11 @@ export class Flip7Game {
       status: Status.ACTIVE,
       roundScore: 0,
       bustCard: null,
+      bet: null, // a live press bet riding the next card: { wager, payout }
+      railbird: null, // out of the round, backing a horse: { targetId, stake, payout }
+      roundBets: 0, // net press winnings this round, for the summary
+      ready: false, // opted in to the next game, once this one is over
+      benched: false, // seated but sitting the current game out
     }));
 
     this.round = 0;
@@ -109,9 +122,14 @@ export class Flip7Game {
       p.numbers = [];
       p.modifiers = [];
       p.secondChance = null;
-      p.status = Status.ACTIVE;
+      // A benched seat belongs to somebody who didn't ready up for this game:
+      // they keep their chair and watch, and are never dealt to.
+      p.status = p.benched ? Status.STAYED : Status.ACTIVE;
       p.roundScore = 0;
       p.bustCard = null;
+      p.bet = null;
+      p.railbird = null;
+      p.roundBets = 0;
     }
 
     // A freshly shuffled deck each round keeps the odds readable for players
@@ -206,6 +224,8 @@ export class Flip7Game {
     const player = this.current;
     this.emit('hit', { playerId: player.id });
     this._deal(player, 'hit');
+    // The pressed bet rides on exactly this card, whatever it turned out to be.
+    this._settleBet(player);
     this.needAdvance = true;
     return true;
   }
@@ -214,11 +234,107 @@ export class Flip7Game {
     const req = this.request();
     if (req.type !== 'move') return false;
     const player = this.current;
+    // Banking instead of drawing calls the bet off — nothing was ever staked
+    // until a card actually moves.
+    player.bet = null;
     player.status = Status.STAYED;
     player.roundScore = this.scoreOf(player);
     this.emit('stay', { playerId: player.id, score: player.roundScore });
     this.needAdvance = true;
     return true;
+  }
+
+  /**
+   * The Press bet house rule: before hitting, wager that the next card won't
+   * bust you. The payout is set at the odds you took — wager × p/(1−p), the
+   * exact bust chance from the exact remaining deck — so the bet is fair by
+   * construction: pressing is pure nerve, not a strategy that always pays.
+   * A bet rides exactly one card, but every hit can carry a fresh one —
+   * doubling down on a fattening hand is the whole point.
+   */
+  placeBet(playerId, wager) {
+    if (!this.pressBets) return false;
+    const req = this.request();
+    if (req.type !== 'move' || req.playerId !== playerId) return false;
+    const player = this.byId(playerId);
+    const amount = Math.floor(Number(wager));
+    if (!Number.isFinite(amount) || amount < 1) return false;
+    if (player.bet) return false; // one bet per card — press again on the next
+    // No funds check: everyone starts a game at 0, and a press you could only
+    // afford late-game is a feature nobody meets. Lose from nothing and you
+    // owe the table — totals can go negative.
+
+    const risk = bustChanceOf(tallyOf(this.deck), {
+      numbers: player.numbers.map((c) => c.value),
+      doubled: player.modifiers.some((c) => c.op === 'mul'),
+      chance: !!player.secondChance,
+      busted: false,
+      standing: this.scoreOf(player),
+    });
+    // A hand that can't bust has nothing to bet on, and a certainty pays nothing.
+    if (risk <= 0 || risk >= 1) return false;
+
+    const payout = Math.max(1, Math.ceil((amount * risk) / (1 - risk)));
+    player.bet = { wager: amount, payout };
+    this.emit('bet', { playerId, wager: amount, payout, risk });
+    return true;
+  }
+
+  /**
+   * The railbird bet: once you're out of the round — busted or frozen — you
+   * can put a flat 5 on somebody still playing to post the round's best score.
+   * Pays 10 if your horse comes in, gone if not. Flat stakes on purpose: this
+   * is a heckling mechanic for dead players, not a second economy. One per
+   * round, and you can't stake points you don't have.
+   */
+  placeRailbird(playerId, targetId) {
+    if (!this.pressBets || this.phase !== 'round') return false;
+    const player = this.byId(playerId);
+    const horse = this.byId(targetId);
+    if (!player || !horse || player === horse) return false;
+    if (player.status !== Status.BUSTED && player.status !== Status.FROZEN) return false;
+    if (player.railbird) return false;
+    if (horse.status !== Status.ACTIVE) return false;
+
+    player.railbird = { targetId, stake: RAIL_STAKE, payout: RAIL_WIN };
+    this.emit('railbird', { playerId, targetId, stake: RAIL_STAKE, payout: RAIL_WIN });
+    return true;
+  }
+
+  /** Round over: every railbird finds out whether their horse came in. */
+  _settleRailbirds() {
+    const best = Math.max(0, ...this.players.map((p) => p.roundScore));
+    for (const p of this.players) {
+      const bet = p.railbird;
+      if (!bet) continue;
+      p.railbird = null;
+      const horse = this.byId(bet.targetId);
+      // A tie for best still counts — the horse did post the round's top score.
+      if (horse && best > 0 && horse.roundScore === best) {
+        p.total += bet.payout;
+        p.roundBets += bet.payout;
+        this.emit('railbird-won', { playerId: p.id, targetId: bet.targetId, payout: bet.payout });
+      } else {
+        p.total -= bet.stake; // below zero if it must
+        p.roundBets -= bet.stake;
+        this.emit('railbird-lost', { playerId: p.id, targetId: bet.targetId, stake: bet.stake });
+      }
+    }
+  }
+
+  _settleBet(player) {
+    const bet = player.bet;
+    if (!bet) return;
+    player.bet = null;
+    if (player.status === Status.BUSTED) {
+      player.total -= bet.wager; // below zero if it must — you owe the table
+      player.roundBets -= bet.wager;
+      this.emit('bet-lost', { playerId: player.id, wager: bet.wager });
+    } else {
+      player.total += bet.payout;
+      player.roundBets += bet.payout;
+      this.emit('bet-won', { playerId: player.id, payout: bet.payout, wager: bet.wager });
+    }
   }
 
   /** Resolve the action card currently awaiting a target. */
@@ -435,8 +551,11 @@ export class Flip7Game {
   }
 
   _finalizeRound() {
+    // Round scores first, then the railbirds settle against the best of them,
+    // then everything banks — so a railbird win can genuinely swing a total.
+    for (const p of this.players) p.roundScore = this.scoreOf(p);
+    this._settleRailbirds();
     const results = this.players.map((p) => {
-      p.roundScore = this.scoreOf(p);
       p.total += p.roundScore;
       p.history.push(p.roundScore);
       return { playerId: p.id, score: p.roundScore, total: p.total, status: p.status };

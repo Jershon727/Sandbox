@@ -9,6 +9,7 @@
 
 import { scoreHand, formula, FLIP7_TARGET } from './scoring.js';
 import { createCard, dealFrom, renderPips } from './cardview.js';
+import { monogram } from './avatar.js';
 import {
   emptyHand,
   handShape,
@@ -17,13 +18,28 @@ import {
   standings,
   playerList,
   isAway,
+  hostAwayFor,
+  canRailbird,
   roundLooksDone,
+  AWAY_AFTER,
+  HOST_AWAY_TAKEOVER,
 } from './room.js';
 import { advise } from './odds.js';
-import { toast, showBanner } from './views.js';
+import { toast, showBanner, buzz, reducedMotion } from './views.js';
 import { sfx } from './sound.js';
-import { burstFrom } from './fx.js';
-import { settings } from './storage.js';
+import { burstFrom, celebrate, fxAllowed } from './fx.js';
+import { settings, saveSettings, speedFactor } from './storage.js';
+
+/**
+ * How bold the Bust-O-meter's advice leans. The caution factors are the same
+ * ones the bot personalities use (ai.js STYLES), so "Wild" advice plays like a
+ * wild bot would — it never changes the odds, only where Hit becomes Stay.
+ */
+const NERVE_OPTIONS = [
+  { key: 'careful', label: 'Careful', caution: 1.9, blurb: 'Banks early, hates a coin flip' },
+  { key: 'balanced', label: 'Balanced', caution: 1.0, blurb: 'Plays the plain odds' },
+  { key: 'wild', label: 'Wild', caution: 0.45, blurb: 'Chases the 7 — for when you need points' },
+];
 
 const MOD_KEYS = [
   { op: 'add', value: 2 },
@@ -42,6 +58,12 @@ export class Scorer {
     this.flag = null; // transient badge: bust | flip7 | save
     this.lastFlip7 = null; // so a Flip 7 is only announced once
     this.dealSource = null;
+    this.dealtHand = null; // { key, seen } — the dealt hand as last painted
+    this.handKey = null; // skip hand rebuilds when nothing in it changed
+    this.flicker = null; // { id, until } — a row flashing for somebody's bust
+    this.armedTargetId = null; // first tap picks a target, the second confirms
+    this.armedRailId = null; // same two-tap dance for a railbird's horse
+    this.pendingKey = null; // which action card the armed target belongs to
     this.scrolledTo = null; // whose row the scoreboard is following
     this.userScrolled = false; // ...unless somebody scrolled it themselves
   }
@@ -66,9 +88,12 @@ export class Scorer {
       adviceRow: id('advice-row'),
       adviceNeedle: id('advice-needle'),
       advicePct: id('advice-pct'),
+      adviceBand: id('advice-band'),
       adviceRec: id('advice-rec'),
+      adviceMode: id('advice-mode'),
       adviceWhy: id('advice-why'),
       adviceReason: id('advice-reason'),
+      adviceNerve: id('advice-nerve'),
     };
 
     this.buildPad();
@@ -86,6 +111,36 @@ export class Scorer {
       this.el.adviceRow.setAttribute('aria-expanded', String(open));
       sfx.tap();
     });
+
+    this.buildNerve();
+  }
+
+  /**
+   * The advice's risk tolerance, set by the player. Last place wants to be
+   * told to push; a comfortable lead wants to be told to sit down — the odds
+   * are arithmetic, but where Hit becomes Stay is a matter of nerve.
+   */
+  buildNerve() {
+    const host = this.el.adviceNerve;
+    host.replaceChildren();
+    for (const opt of NERVE_OPTIONS) {
+      const btn = document.createElement('button');
+      btn.className = 'seg__opt';
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.setAttribute('aria-checked', String(settings.nerve === opt.key));
+      btn.textContent = opt.label;
+      btn.title = opt.blurb;
+      btn.addEventListener('click', (e) => {
+        // The whole advice row is a disclosure button; don't collapse it.
+        e.stopPropagation();
+        saveSettings({ nerve: opt.key });
+        sfx.tap();
+        this.buildNerve();
+        this.render();
+      });
+      host.append(btn);
+    }
   }
 
   // ── whose hand am I editing ─────────────────────────────────────────────
@@ -103,12 +158,51 @@ export class Scorer {
   }
 
   select(playerId) {
-    // In a dealt game, tapping a player is how you aim an action card.
+    // In a dealt game, tapping a player is how you aim an action card. Freezing
+    // the wrong person is not undoable, so the first tap arms and the second —
+    // on the same row — confirms; tapping somebody else re-arms onto them.
     const pending = this.store.state?.pending;
     if (this.store.isDealt) {
-      if (pending?.byId === this.store.actingId && pending.targets.includes(playerId)) {
-        sfx.tap();
-        this.store.intent({ do: 'target', targetId: playerId });
+      // With the wire down the dealer can't hear the aim — refuse rather than
+      // arming a freeze that fires whenever the socket happens to come back.
+      if (this.store.connection === 'offline') {
+        sfx.error();
+        toast('Reconnecting — hang on');
+        return;
+      }
+      if (pending?.byId === this.store.actingId) {
+        if (!pending.targets.includes(playerId)) {
+          sfx.error();
+          toast('Pick one of the highlighted players');
+          return;
+        }
+        if (this.armedTargetId === playerId) {
+          this.armedTargetId = null;
+          sfx.tap();
+          this.store.intent({ do: 'target', targetId: playerId });
+        } else {
+          this.armedTargetId = playerId;
+          sfx.tap();
+          this.render();
+        }
+      } else if (canRailbird(this.store.state, this.store.actingId)) {
+        // Out of the round with the house rule on: tapping a live player backs
+        // them from the rail. Same two-tap arm/confirm as aiming a card.
+        const horse = this.store.state?.players?.[playerId];
+        if (playerId === this.store.actingId || horse?.state !== 'active' || horse?.waiting) {
+          sfx.error();
+          toast('Back someone still in the round');
+          return;
+        }
+        if (this.armedRailId === playerId) {
+          this.armedRailId = null;
+          sfx.modifier();
+          this.store.intent({ do: 'railbird', targetId: playerId });
+        } else {
+          this.armedRailId = playerId;
+          sfx.tap();
+          this.render();
+        }
       } else {
         sfx.error();
         toast('The dealer is running this one');
@@ -170,6 +264,7 @@ export class Scorer {
       const key = document.createElement('button');
       key.className = 'pad__key';
       key.type = 'button';
+      key.dataset.value = String(v);
       key.style.setProperty('--c', `var(--n${v})`);
       key.textContent = String(v);
       key.setAttribute('aria-label', `Add a ${v}`);
@@ -297,6 +392,16 @@ export class Scorer {
     const state = this.store.state;
     if (!state) return;
 
+    // An armed target only makes sense for the action card it was armed under.
+    const pendingKey = state.pending ? `${state.pending.byId}:${state.pending.action}` : null;
+    if (pendingKey !== this.pendingKey) {
+      this.pendingKey = pendingKey;
+      this.armedTargetId = null;
+    }
+
+    // An armed horse only makes sense while the railbird window is open.
+    if (this.armedRailId && !canRailbird(state, this.store.actingId)) this.armedRailId = null;
+
     this.renderStandings();
 
     const dealt = this.store.isDealt;
@@ -347,6 +452,13 @@ export class Scorer {
     // A ring round your own hand while the dealer is waiting on you.
     this.el.card.classList.toggle('is-turn', dealt && this.store.myTurn && !state.pending);
     this.el.card.classList.toggle('is-frozen', dealt && t?.state === 'frozen');
+    // Five cards in, the hand card starts to run warm; at six it glows. The
+    // escalation dies with the hand — bank, bust or freeze and it goes cold.
+    const heatable =
+      dealt && t?.state === 'active' && !t?.waiting && !shape.busted && !state.lobby && !state.roundOver;
+    const heat = heatable ? hand.numbers.length : 0;
+    if (heat >= 5) this.el.card.dataset.heat = String(Math.min(6, heat));
+    else delete this.el.card.dataset.heat;
     renderPips(this.el.pips, hand.numbers.length);
     this.renderHand(hand, shape);
 
@@ -364,13 +476,24 @@ export class Scorer {
     this.renderPadState(hand);
     this.renderAdvice(t);
 
-    // Only the host ends the round, so the whole table banks on the same beat.
-    // In a dealt game the dealer decides, so neither control applies.
+    // Only the host ends the round, so the whole table banks on the same beat —
+    // unless the host's phone has been gone so long that waiting on them is
+    // worse than letting somebody else press their button. In a dealt game the
+    // dealer decides, so neither control applies.
     const host = this.store.isHost;
     if (!dealt) {
-      this.el.end.hidden = !host;
-      this.el.waiting.hidden = host;
-      if (host) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
+      const away = this.store.isOnline && !host ? hostAwayFor(state) : 0;
+      const orphaned = away >= HOST_AWAY_TAKEOVER;
+      this.el.end.hidden = !host && !orphaned;
+      this.el.waiting.hidden = host || orphaned;
+      if (!this.el.waiting.hidden) {
+        const hostName = state.players?.[state.hostId]?.name ?? 'the host';
+        this.el.waiting.textContent =
+          away > AWAY_AFTER
+            ? `${hostName} looks offline — anyone can end the round in a minute`
+            : `Waiting for ${hostName} to end the round`;
+      }
+      if (!this.el.end.hidden) this.el.end.classList.toggle('is-ready', roundLooksDone(state));
     }
 
     this.announceFlip7();
@@ -396,16 +519,23 @@ export class Scorer {
       return;
     }
 
-    const a = advise(this.store.state, target.id);
+    const nerve = NERVE_OPTIONS.find((n) => n.key === settings.nerve) ?? NERVE_OPTIONS[1];
+    const a = advise(this.store.state, target.id, { caution: nerve.caution });
     if (!a || a.move === 'none') {
       // Nothing to decide once the hand is busted or already at seven.
       el.advice.hidden = true;
       return;
     }
+    // Say which nerve the call was made on, so a Wild "Hit" reads as chosen.
+    el.adviceMode.textContent =
+      nerve.key === 'balanced' ? 'Confucius says' : `Confucius says · ${nerve.label.toLowerCase()}`;
 
     el.advice.hidden = false;
     el.advice.dataset.band = a.band;
     el.advice.dataset.move = a.move;
+    // The band in a word too, so the colour is never the only signal.
+    el.adviceBand.textContent =
+      { safe: 'safe', ok: 'okay', warm: 'risky', hot: 'danger' }[a.band] ?? '';
 
     const pct = Math.round(a.risk * 100);
     // The needle slides via CSS; the number is tweened to match it.
@@ -417,7 +547,7 @@ export class Scorer {
     const whose = target.id === this.store.actingId ? 'You' : target.name;
     el.adviceRow.setAttribute(
       'aria-label',
-      `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Claude recommends: ${a.headline}. ${a.why}`,
+      `Bust-O-meter: ${pct} percent chance the next card busts ${whose}. Confucius says: ${a.headline}. ${a.why}`,
     );
   }
 
@@ -459,12 +589,44 @@ export class Scorer {
 
     const mine = hit.id === this.store.actingId;
     sfx.flip7();
+    buzz([30, 60, 30, 60, 120]);
+
+    // The jackpot gets the full treatment: the seven cards light up in order,
+    // the screen flashes gold, and everyone gets the shower — a Flip 7 ends the
+    // round for the whole table, so the whole table celebrates it. The summary
+    // modal is held back (main.js) so none of this plays under a dialog.
+    if (fxAllowed() && !reducedMotion()) {
+      const strip = mine ? this.el.hand : document.getElementById('spectate-cards');
+      [...(strip?.querySelectorAll(".card[data-kind='number']") ?? [])].forEach((card, i) => {
+        if (card.classList.contains('is-new')) return; // still mid deal-in
+        card.style.animationDelay = `${i * 80}ms`;
+        card.classList.add('is-glow7');
+      });
+      goldFlash();
+      if (mine) this.flyBonus();
+    }
     burstFrom(mine ? this.el.card : this.el.standings);
+    celebrate({ count: 90 });
     showBanner('FLIP 7!', {
       tone: 'flip7',
       sub: mine ? '+15 bonus — round over' : `${hit.name} — round over`,
       ms: 1500,
     });
+  }
+
+  /** "+15" leaves the hand and lands on the score readout. */
+  flyBonus() {
+    const from = this.el.hand.getBoundingClientRect();
+    const to = this.el.score.getBoundingClientRect();
+    const el = document.createElement('span');
+    el.className = 'fly15';
+    el.textContent = '+15';
+    el.style.left = `${Math.round(from.left + from.width / 2)}px`;
+    el.style.top = `${Math.round(from.top + from.height / 2)}px`;
+    el.style.setProperty('--fx', `${Math.round(to.left + to.width / 2 - (from.left + from.width / 2))}px`);
+    el.style.setProperty('--fy', `${Math.round(to.top + to.height / 2 - (from.top + from.height / 2))}px`);
+    document.body.append(el);
+    setTimeout(() => el.remove(), 1200 * speedFactor());
   }
 
   renderStandings() {
@@ -474,6 +636,9 @@ export class Scorer {
     const now = Date.now();
     const leader = rows.length ? rows[0].total ?? 0 : 0;
     const selectedId = this.target?.id ?? this.store.actingId;
+
+    // Five or more rows switch the list to its denser single-line form.
+    host.classList.toggle('is-compact', rows.length > 4);
 
     host.replaceChildren();
     rows.forEach((p, i) => {
@@ -496,7 +661,17 @@ export class Scorer {
         'is-target',
         state.pending?.byId === this.store.actingId && state.pending.targets.includes(p.id),
       );
+      row.classList.toggle('is-armed', p.id === this.armedTargetId || p.id === this.armedRailId);
+      // Backable horses, for a player watching from the rail.
+      const railing = canRailbird(state, this.store.actingId);
+      row.classList.toggle(
+        'is-horse',
+        railing && p.state === 'active' && !p.waiting && p.id !== this.store.actingId,
+      );
       row.classList.toggle('is-frozen', p.state === 'frozen');
+      // Somebody else's bust: their row flickers red for a beat. Held here
+      // rather than toggled by the event, so a re-render can't wipe it early.
+      row.classList.toggle('is-flicker', this.flicker?.id === p.id && now < this.flicker.until);
 
       const rank = document.createElement('span');
       rank.className = 'stand__rank';
@@ -504,7 +679,7 @@ export class Scorer {
 
       const name = document.createElement('span');
       name.className = 'stand__name';
-      name.append(document.createTextNode(p.name));
+      name.append(monogram(p.name, p.order ?? i), document.createTextNode(p.name));
 
       const tags = document.createElement('span');
       tags.className = 'stand__tags';
@@ -514,12 +689,27 @@ export class Scorer {
       // Somebody who walked in mid-round isn't out, they're next. Saying so is
       // the difference between "the app skipped them" and "they just missed one".
       if (p.waiting) tags.append(chip('next round', 'waiting'));
+      // Somebody who didn't ready up for this game is watching, not losing.
+      if (p.benched) tags.append(chip('sitting out', 'waiting'));
+      // Somebody's banked-plus-holding has crossed the target: if the round
+      // ends now, they win the game. The whole table should be able to see it.
+      if (
+        !state.lobby &&
+        state.status === 'playing' &&
+        state.target &&
+        (p.total ?? 0) + p.round >= state.target
+      ) {
+        tags.append(chip('game point', 'gamepoint'));
+      }
       if (shape.busted) tags.append(chip('bust', 'bust'));
       else if (shape.flip7) tags.append(chip('flip 7', 'flip7'));
       else if (this.store.isDealt && !p.waiting && p.state === 'frozen') {
         tags.append(chip('frozen', 'freeze'));
       } else if (this.store.isDealt && state.turnId === p.id) {
-        tags.append(chip(p.id === this.store.actingId ? 'your turn' : 'playing', 'turn'));
+        // A bot's pause is deliberate (ai.js thinkingTime) — label it as
+        // thought, with a pulsing ellipsis, rather than a generic "playing".
+        if (p.isBot) tags.append(chip('thinking', 'thinking'));
+        else tags.append(chip(p.id === this.store.actingId ? 'your turn' : 'playing', 'turn'));
       }
       if (this.store.isOnline && p.id !== this.store.myId && isAway(p, now)) {
         tags.append(chip('away', 'away'));
@@ -534,7 +724,10 @@ export class Scorer {
       // identical, and you can't tell who is still deciding.
       const settled = { stayed: '✓', frozen: '❄', flip7: '★' }[p.state];
       if (shape.busted) round.textContent = 'bust';
-      else if (this.store.isDealt && p.waiting) {
+      else if (this.store.isDealt && p.benched) {
+        round.textContent = 'out';
+        round.classList.add('is-idle');
+      } else if (this.store.isDealt && p.waiting) {
         round.textContent = 'next';
         round.classList.add('is-idle');
       } else if (this.store.isDealt && settled) {
@@ -554,7 +747,8 @@ export class Scorer {
       bar.className = 'stand__bar';
       const fill = document.createElement('span');
       fill.className = 'stand__fill';
-      fill.style.width = `${Math.min(100, ((p.total ?? 0) / (state.target || 200)) * 100)}%`;
+      // Clamped both ways: press-bet debts can drag a total below zero.
+      fill.style.width = `${Math.min(100, Math.max(0, ((p.total ?? 0) / (state.target || 200)) * 100))}%`;
       bar.append(fill);
 
       row.append(rank, name, round, total, bar);
@@ -632,20 +826,68 @@ export class Scorer {
       items.push({ card: hand.bustCard, kind: 'bust', i: 0, killer: true });
     }
 
+    // Skip the rebuild when nothing in the hand changed: renders arrive on
+    // every table event, and rebuilding mid deal-in cuts the flip short.
+    const renderKey = [
+      this.store.isDealt ? 'd' : 's',
+      this.target?.id ?? '',
+      this.store.state?.round ?? 0,
+      this.target?.waiting ? 'w' : '',
+      this.target?.benched ? 'B' : '',
+      hand.busted ? 'b' : '',
+      hand.numbers.join(','),
+      hand.mods.map((m) => `${m.op}${m.value}`).join(','),
+      hand.chance ? 'c' : '',
+      hand.bustCard ? `k${hand.bustCard.kind}:${hand.bustCard.value ?? hand.bustCard.action ?? ''}` : '',
+    ].join('|');
+    if (this.handKey === renderKey) return;
+    this.handKey = renderKey;
+
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'hand__empty';
       empty.textContent = shape.busted
         ? 'Busted with nothing'
-        : this.target?.waiting
-          ? 'Dealt in next round'
-          : this.store.isDealt
-            ? 'Waiting for a card'
-            : 'Tap the cards below';
+        : this.target?.benched
+          ? 'Sitting this game out'
+          : this.target?.waiting
+            ? 'Dealt in next round'
+            : this.store.isDealt
+              ? 'Waiting for a card'
+              : 'Tap the cards below';
       host.replaceChildren(empty);
       this.dealSource = null;
+      // An empty dealt hand is the baseline the next deal animates from.
+      if (this.store.isDealt) {
+        this.dealtHand = { key: this.dealtKey(), seen: { n: 0, m: 0, c: 0 } };
+      }
       return;
     }
+
+    // In a dealt game cards arrive from the deck, not from a keypad tap, so the
+    // flip-in is driven by the hand growing between renders: anything beyond
+    // what was painted last time flips in from the deck, rings its value and
+    // ticks the motor. Counted per category (a new number lands before held
+    // modifiers, so a flat index diff would flip the wrong card), and keyed per
+    // round and player so a reload mid-round, or the phone changing hands in
+    // pass-and-play, doesn't replay a whole hand.
+    let seen = null;
+    if (this.store.isDealt) {
+      const key = this.dealtKey();
+      const now = { n: hand.numbers.length, m: hand.mods.length, c: hand.chance ? 1 : 0 };
+      const prevRound = (this.dealtHand?.key ?? '').split(':')[0];
+      const sameRound = prevRound === String(this.store.state?.round ?? 0);
+      seen = !this.dealtHand
+        ? now // first paint after a join or reload — nothing to replay
+        : this.dealtHand.key === key
+          ? this.dealtHand.seen
+          : sameRound
+            ? now // same round, different hand: the phone changed hands
+            : { n: 0, m: 0, c: 0 }; // a fresh deal
+      this.dealtHand = { key, seen: now };
+    }
+    const deck = document.getElementById('deck');
+    let arriving = 0;
 
     const before = host.querySelectorAll('.card').length;
     host.replaceChildren();
@@ -673,6 +915,12 @@ export class Scorer {
       if (this.store.isDealt) {
         // Dealt cards aren't yours to take back.
         host.append(el);
+        const isNew =
+          seen &&
+          ((item.kind === 'number' && item.i >= seen.n) ||
+            (item.kind === 'mod' && item.i >= seen.m) ||
+            (item.kind === 'chance' && !seen.c));
+        if (isNew) this.dealtCardIn(el, item, arriving++, deck);
         continue;
       }
       el.setAttribute('role', 'button');
@@ -693,6 +941,32 @@ export class Scorer {
     this.dealSource = null;
   }
 
+  /** Which dealt hand the growth-diff is tracking: this round, this player. */
+  dealtKey() {
+    return `${this.store.state?.round ?? 0}:${this.target?.id ?? ''}`;
+  }
+
+  /**
+   * One card arriving from the deck: the existing deal-in flip (face down for
+   * the first half, then the reveal), with the value ringing as the face turns
+   * over rather than when the DOM changes. A Flip Three lands as a cascade.
+   */
+  dealtCardIn(el, item, order, deck) {
+    const delay = order * 200 * speedFactor();
+    dealFrom(el, deck, delay);
+    const reveal = delay + 230 * speedFactor();
+    setTimeout(() => {
+      if (item.kind === 'number') {
+        sfx.gain(item.card.value);
+        // The tick sharpens as the hand fattens — five and six get a double.
+        buzz(this.hand.numbers.length >= 5 ? [15, 40, 15] : 10);
+      } else {
+        sfx.modifier();
+        buzz(10);
+      }
+    }, reveal);
+  }
+
   renderPadState(hand) {
     for (let v = 0; v <= 12; v++) {
       const key = this.padKeys.get(`n${v}`);
@@ -711,6 +985,14 @@ export class Scorer {
     this.padKeys.get('chance').classList.toggle('is-on', hand.chance);
     this.padKeys.get('bust').classList.toggle('is-on', hand.busted);
   }
+}
+
+/** A brief gold wash over the whole screen — the Flip 7 moment. */
+function goldFlash() {
+  const el = document.createElement('div');
+  el.className = 'goldflash';
+  document.body.append(el);
+  setTimeout(() => el.remove(), 950 * speedFactor());
 }
 
 function chip(text, tone) {

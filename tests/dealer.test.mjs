@@ -16,9 +16,14 @@ import {
   snapshot,
   restore,
   deckTally,
+  settleSeat,
+  stalledTurn,
   MAX_SEATS,
+  SEAT_ACTIVE_MS,
+  STALL_MS,
 } from '../public/js/dealer.js';
 import { Status } from '../public/js/engine.js';
+import { bustChanceFor } from '../public/js/ai.js';
 
 const newGame = (opts = {}) =>
   createDealtGame({
@@ -75,6 +80,36 @@ function playRoundOut(game, limit = 600) {
     }
   }
   throw new Error('round never closed');
+}
+
+/**
+ * Drive until the dealer is waiting on `id`, banking (or self-targeting) for
+ * everyone it asks about first, so nobody else's play can knock `id` out.
+ */
+function waitOn(game, id, limit = 300) {
+  for (let i = 0; i < limit; i++) {
+    const request = game.request();
+    if (request.type === 'move' || request.type === 'target') {
+      if (request.playerId === id) return;
+      const actor = game.byId(request.playerId);
+      if (!actor.isBot) {
+        if (request.type === 'move') {
+          applyIntent(game, request.playerId, { do: 'stay' });
+        } else {
+          const self = request.targets.includes(request.playerId)
+            ? request.playerId
+            : request.targets[0];
+          applyIntent(game, request.playerId, { do: 'target', targetId: self });
+        }
+        continue;
+      }
+    }
+    if (request.type === 'round-over' || request.type === 'game-over') {
+      throw new Error(`round ended before ${id} was waited on`);
+    }
+    advance(game);
+  }
+  throw new Error(`never waited on ${id}`);
 }
 
 // ── seating ───────────────────────────────────────────────────────────────
@@ -190,16 +225,47 @@ test('the dealer says which seat is yours rather than letting a phone guess', ()
   assert.deepEqual(again, { playerId: 'sam-phone', added: false, late: false });
   assert.equal(game.players.filter((p) => p.name === 'Sam').length, 1);
 
-  // New phone, same name — a dead battery coming back. It takes the seat over,
-  // and crucially gets told that seat's id rather than the one it invented.
-  const replacement = claimSeat(game, { id: 'sam-new-phone', name: 'sam' });
+  // New phone, same name, while Sam's seat is visibly being driven: not handed
+  // over on a name match alone. The dealer answers "that seat is taken" so the
+  // phone can ask its user whether it's really them.
+  const clash = claimSeat(game, { id: 'sam-new-phone', name: 'sam' });
+  assert.equal(clash.conflict, true);
+  assert.equal(clash.playerId, 'sam-phone');
+  assert.equal(game.byId('sam-new-phone'), undefined, 'no second seat was made');
+
+  // The same claim, confirmed — a dead battery coming back. It takes the seat
+  // over, and crucially gets told that seat's id rather than the one it invented.
+  const replacement = claimSeat(game, { id: 'sam-new-phone', name: 'sam', takeover: true });
   assert.equal(replacement.playerId, 'sam-phone');
   assert.equal(replacement.added, false);
+  assert.equal(replacement.conflict, undefined);
   assert.equal(game.players.length, 3);
-
-  // A different person with the same name does not silently drive Sam's seat
-  // under a new id — they get told the seat that exists.
   assert.equal(game.byId('sam-new-phone'), undefined);
+});
+
+test('an idle seat is handed back without ceremony', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  // Sam's phone has said nothing for longer than the activity window — that is
+  // exactly the dead-battery case, and it must stay frictionless.
+  game.byId('sam-phone').lastSeen = Date.now() - SEAT_ACTIVE_MS - 1;
+
+  const back = claimSeat(game, { id: 'sam-new-phone', name: 'Sam' });
+  assert.equal(back.conflict, undefined);
+  assert.equal(back.playerId, 'sam-phone');
+});
+
+test('any request from a phone proves its seat is being driven', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam-phone', name: 'Sam' });
+  game.byId('sam-phone').lastSeen = Date.now() - SEAT_ACTIVE_MS - 1;
+
+  // Even an ask the dealer refuses is proof of life for the seat that asked.
+  applyIntent(game, 'sam-phone', { do: 'hit' });
+  const clash = claimSeat(game, { id: 'imposter-phone', name: 'Sam' });
+  assert.equal(clash.conflict, true);
 });
 
 test('a full table refuses a seat instead of losing the request', () => {
@@ -214,6 +280,60 @@ test('bots can be removed but people cannot', () => {
   assert.equal(removeSeat(game, botId), true);
   assert.equal(game.players.length, 2);
   assert.equal(removeSeat(game, 'me'), false, 'a person is not the dealer’s to evict');
+});
+
+test('the host can clear a human seat, but never their own', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam', name: 'Sam' });
+  assert.equal(removeSeat(game, 'sam'), false, 'a person only goes when explicitly evicted');
+  assert.equal(removeSeat(game, 'me', { evictHumans: true }), false, 'the host stays');
+  assert.equal(removeSeat(game, 'sam', { evictHumans: true }), true);
+  assert.equal(game.byId('sam'), undefined);
+  assert.ok(
+    game.players.every((p, n) => p.seat === n),
+    'seats are renumbered',
+  );
+});
+
+test('evicting a player mid-round returns their cards and the round still closes', () => {
+  const game = createDealtGame({
+    seats: [
+      { id: 'me', name: 'Jack' },
+      { id: 'sam', name: 'Sam' },
+      { id: 'mo', name: 'Mo' },
+    ],
+    target: 200,
+    seed: 5,
+    deal: false,
+  });
+  applyIntent(game, 'me', { do: 'next-round' });
+  waitOn(game, 'sam');
+
+  // Only the host clears chairs.
+  assert.deepEqual(applyIntent(game, 'mo', { do: 'remove-seat', targetId: 'sam' }), {
+    ok: false,
+    why: 'host-only',
+  });
+
+  const sam = game.byId('sam');
+  const held =
+    sam.numbers.length + sam.modifiers.length + (sam.secondChance ? 1 : 0) + (sam.bustCard ? 1 : 0);
+  const pendingCard = game.pending?.by === 'sam' ? 1 : 0;
+  const before = game.deck.length + game.discard.length;
+
+  const result = applyIntent(game, 'me', { do: 'remove-seat', targetId: 'sam' });
+  assert.equal(result.ok, true);
+  assert.equal(result.removedName, 'Sam', 'the name survives for the feed line');
+  assert.equal(game.byId('sam'), undefined);
+  assert.equal(
+    game.deck.length + game.discard.length,
+    before + held + pendingCard,
+    'their cards return to play — conservation holds',
+  );
+
+  // The round carries on without them rather than waiting on an empty chair.
+  assert.equal(playRoundOut(game), 'round-over');
 });
 
 // ── the projection ────────────────────────────────────────────────────────
@@ -386,6 +506,112 @@ test('a rematch clears the scores and deals again', () => {
   assert.equal(applyIntent(game, 'me', { do: 'rematch' }).ok, true);
   assert.equal(game.byId('me').total, 0);
   assert.equal(game.round, 1);
+});
+
+// ── presence and stalled turns ────────────────────────────────────────────
+
+test('the projection carries real presence, so the away chip can work', () => {
+  const game = newGame();
+  settle(game);
+  claimSeat(game, { id: 'sam', name: 'Sam' });
+  const stale = Date.now() - 60_000;
+  game.byId('sam').lastSeen = stale;
+
+  const view = project(game, { code: 'ABCD' });
+  assert.equal(view.players.sam.lastSeen, stale, 'a silent phone projects as silent');
+  const bot = game.players.find((p) => p.isBot);
+  assert.ok(Date.now() - view.players[bot.id].lastSeen < 1000, 'bots are always present');
+  assert.ok(
+    Date.now() - view.players.me.lastSeen < 1000,
+    'a seat with no record yet reads as present, not away',
+  );
+});
+
+test('a turn stuck behind a silent phone is spotted, and only then', () => {
+  const game = newGame();
+  settle(game);
+  const me = game.byId('me');
+
+  // The host seat starts with no record — it gets the benefit of the doubt.
+  assert.equal(stalledTurn(game), null);
+  me.lastSeen = Date.now() - 1000;
+  assert.equal(stalledTurn(game), null, 'a heartbeat a second ago is presence');
+  me.lastSeen = Date.now() - STALL_MS - 1;
+  assert.equal(stalledTurn(game), 'me');
+
+  const settled = settleSeat(game, 'me');
+  assert.equal(settled.did, 'stay');
+  assert.equal(game.byId('me').status, Status.STAYED);
+  assert.equal(settled.score, game.byId('me').roundScore, 'banked, not zeroed');
+  assert.equal(stalledTurn(game), null, 'nothing left to recover');
+});
+
+test('bots never read as stalled — they move on their own', () => {
+  const game = newGame();
+  settle(game);
+  applyIntent(game, 'me', { do: 'stay' });
+  while (game.request().type === 'auto') game.tick();
+  const request = game.request();
+  assert.equal(request.type, 'move');
+  const bot = game.byId(request.playerId);
+  assert.equal(bot.isBot, true);
+  bot.lastSeen = Date.now() - STALL_MS * 2;
+  assert.equal(stalledTurn(game), null);
+});
+
+test('a stalled aim lands the card rather than hanging the round', () => {
+  const game = newGame();
+  settle(game);
+  const me = game.byId('me');
+  game._openAction(me, { id: 'c9', kind: 'action', action: 'freeze' });
+  me.lastSeen = Date.now() - STALL_MS - 1;
+  assert.equal(stalledTurn(game), 'me');
+
+  const settled = settleSeat(game, 'me');
+  assert.equal(settled.did, 'target');
+  assert.equal(settled.targetId, 'me', 'a freeze lands on its holder, hurting nobody else');
+  assert.equal(game.byId('me').status, Status.FROZEN);
+});
+
+test('the host can move the game past a vanished player without waiting', () => {
+  const game = createDealtGame({
+    seats: [
+      { id: 'me', name: 'Jack' },
+      { id: 'sam', name: 'Sam' },
+    ],
+    target: 200,
+    seed: 11,
+    deal: false,
+  });
+  applyIntent(game, 'me', { do: 'next-round' });
+  waitOn(game, 'sam');
+
+  // Only the host, and never a bot's seat.
+  assert.deepEqual(applyIntent(game, 'sam', { do: 'skip', targetId: 'me' }), {
+    ok: false,
+    why: 'host-only',
+  });
+
+  const result = applyIntent(game, 'me', { do: 'skip', targetId: 'sam' });
+  assert.equal(result.ok, true);
+  assert.equal(result.skipped, 'sam');
+  if (result.settled.did === 'stay') {
+    assert.equal(game.byId('sam').status, Status.STAYED);
+    assert.equal(typeof result.settled.score, 'number');
+  } else {
+    assert.ok(result.settled.targetId, 'their action card was landed, not lost');
+  }
+  assert.notEqual(game.request().playerId, 'sam', 'the table is no longer stuck behind them');
+});
+
+test('a bot cannot be skipped — it was never stuck', () => {
+  const game = newGame();
+  settle(game);
+  const bot = game.players.find((p) => p.isBot);
+  assert.deepEqual(applyIntent(game, 'me', { do: 'skip', targetId: bot.id }), {
+    ok: false,
+    why: 'bad-target',
+  });
 });
 
 // ── the dealer drives itself ──────────────────────────────────────────────
@@ -567,6 +793,15 @@ test('every event a player should notice becomes a readable line', () => {
     /used their Second Chance/,
   );
 
+  // A tie at the finish line deals another round; the account has to say why.
+  me.total = 212;
+  bot.total = 212;
+  const tie = line({ type: 'tiebreak', playerIds: [me.id, bot.id] });
+  assert.ok(tie.includes('Jack'), tie);
+  assert.ok(tie.includes(bot.name), tie);
+  assert.ok(tie.includes('tied at 212'), tie);
+  assert.match(tie, /one more round/);
+
   // Bookkeeping the player doesn't need to read stays out of the account.
   for (const type of ['draw', 'turn', 'defer']) {
     assert.equal(line({ type, playerId: me.id, card: { kind: 'number', value: 4 } }), null, type);
@@ -627,4 +862,266 @@ test('a game in progress can be saved and resumed exactly', () => {
 test('a snapshot from a future version is refused rather than misread', () => {
   assert.equal(restore({ v: 99 }), null);
   assert.equal(restore(null), null);
+});
+
+// ── the Press bet house rule ──────────────────────────────────────────────
+
+const pressGame = (seed = 7) =>
+  createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 1 }),
+    target: 200,
+    seed,
+    pressBets: true,
+  });
+
+/** Put the on-turn player in a bettable spot: points to stake, a live hand. */
+function bettable(game, total = 40) {
+  dealOut(game);
+  const player = game.byId(game.request().playerId);
+  player.total = total;
+  player.numbers = [{ kind: 'number', value: 6, id: 'test-6' }];
+  player.secondChance = null;
+  return player;
+}
+
+test('a press bet is refused off-rule, off-turn, over-budget, or twice', () => {
+  const off = newGame();
+  dealOut(off);
+  const offTurn = off.request().playerId;
+  off.byId(offTurn).total = 40;
+  assert.equal(applyIntent(off, offTurn, { do: 'bet', wager: 5 }).ok, false, 'rule is off');
+
+  const game = pressGame();
+  const player = bettable(game, 20);
+  const other = game.players.find((q) => q.id !== player.id);
+  assert.deepEqual(applyIntent(game, other.id, { do: 'bet', wager: 5 }), {
+    ok: false,
+    why: 'not-your-turn',
+  });
+  // No funds gate: everyone starts at 0, so a press must always be possible.
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 0 }).ok, false);
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 'x' }).ok, false);
+  assert.equal(applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok, true);
+  assert.equal(
+    applyIntent(game, player.id, { do: 'bet', wager: 5 }).ok,
+    false,
+    'not while one is riding',
+  );
+});
+
+test('a shielded hand has nothing to bet on', () => {
+  const game = pressGame();
+  const player = bettable(game);
+  player.secondChance = { kind: 'action', action: 'chance', id: 'test-sc' };
+  assert.equal(game.placeBet(player.id, 5), false, 'risk is zero behind the shield');
+});
+
+test('the payout is priced at exactly the odds taken', () => {
+  const game = pressGame();
+  const player = bettable(game, 50);
+  const risk = bustChanceFor(game, player);
+  assert.ok(risk > 0 && risk < 1);
+  assert.equal(game.placeBet(player.id, 10), true);
+  assert.equal(player.bet.payout, Math.max(1, Math.ceil((10 * risk) / (1 - risk))));
+});
+
+test('a pressed bet pays on survival and is taken on a bust', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+  const payout = player.bet.payout;
+  game.deck.push({ kind: 'number', value: 3, id: 'safe-3' }); // drawn next
+  game.hit();
+  assert.equal(player.bet, null);
+  assert.equal(player.total, 40 + payout);
+  assert.equal(player.roundBets, payout);
+  assert.ok(game.drain().some((e) => e.type === 'bet-won'));
+
+  const g2 = pressGame(11);
+  const q = bettable(g2, 40);
+  g2.placeBet(q.id, 10);
+  g2.deck.push({ kind: 'number', value: 6, id: 'dup-6' }); // the duplicate
+  g2.hit();
+  assert.equal(q.status, Status.BUSTED);
+  assert.equal(q.total, 30, 'the wager comes off the top');
+  assert.equal(q.roundBets, -10);
+  assert.ok(g2.drain().some((e) => e.type === 'bet-lost'));
+});
+
+test('staying calls the bet off with nothing staked', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+  game.stay();
+  assert.equal(player.bet, null);
+  assert.equal(player.total, 40, 'nothing moves until a card does');
+});
+
+test('press state survives a snapshot and reaches the projection', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  game.placeBet(player.id, 10);
+
+  const back = restore(JSON.parse(JSON.stringify(snapshot(game))));
+  assert.equal(back.pressBets, true);
+  assert.deepEqual(back.byId(player.id).bet, player.bet);
+
+  const room = project(game, { code: 'ABCD' });
+  assert.equal(room.pressBets, true);
+  assert.deepEqual(room.players[player.id].bet, player.bet);
+});
+
+// ── the railbird bet ──────────────────────────────────────────────────────
+
+test('a railbird bet needs the rule on, a dead bettor, a live horse, and the stake', () => {
+  const game = pressGame();
+  dealOut(game);
+  const me = game.byId('me');
+  const bot = game.players.find((p) => p.isBot);
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+
+  assert.equal(game.placeRailbird('me', bot.id), false, 'still in the round');
+  me.status = Status.BUSTED;
+  assert.equal(game.placeRailbird('me', 'me'), false, 'cannot back yourself');
+  bot.status = Status.STAYED;
+  assert.equal(game.placeRailbird('me', bot.id), false, 'the horse must be live');
+  bot.status = Status.ACTIVE;
+  assert.equal(applyIntent(game, 'me', { do: 'railbird', targetId: bot.id }).ok, true);
+  assert.equal(game.placeRailbird('me', bot.id), false, 'one per round');
+
+  const off = newGame();
+  dealOut(off);
+  const dead = off.byId('me');
+  dead.status = Status.BUSTED;
+  dead.total = 40;
+  const horse = off.players.find((p) => p.isBot);
+  horse.status = Status.ACTIVE;
+  assert.equal(off.placeRailbird('me', horse.id), false, 'rule is off');
+});
+
+test('the railbird collects when the horse tops the round, pays when it does not', () => {
+  const win = pressGame();
+  dealOut(win);
+  const me = win.byId('me');
+  const bot = win.players.find((p) => p.isBot);
+  me.status = Status.BUSTED;
+  me.numbers = [];
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+  bot.numbers = [{ kind: 'number', value: 9, id: 'h9' }];
+  assert.equal(win.placeRailbird('me', bot.id), true);
+  bot.status = Status.STAYED; // round over: the horse banked the best score
+  for (let i = 0; i < 40 && win.phase === 'round'; i++) win.tick();
+  assert.equal(win.phase !== 'round', true, 'the round closed');
+  assert.equal(me.total, 50, 'stake 5 returned as a +10 win');
+  assert.equal(me.roundBets, 10);
+  assert.ok(win.drain().some((e) => e.type === 'railbird-won'));
+
+  const lose = pressGame(11);
+  dealOut(lose);
+  const dead = lose.byId('me');
+  const horse = lose.players.find((p) => p.isBot);
+  dead.status = Status.BUSTED;
+  dead.numbers = [];
+  dead.total = 40;
+  horse.status = Status.ACTIVE;
+  horse.numbers = [{ kind: 'number', value: 9, id: 'h9b' }];
+  assert.equal(lose.placeRailbird('me', horse.id), true);
+  horse.status = Status.BUSTED; // the horse falls at the last fence
+  horse.roundScore = 0;
+  for (let i = 0; i < 40 && lose.phase === 'round'; i++) lose.tick();
+  assert.equal(dead.total, 35, 'the 5 is gone');
+  assert.equal(dead.roundBets, -5);
+  assert.ok(lose.drain().some((e) => e.type === 'railbird-lost'));
+});
+
+test('a railbird ticket survives a snapshot and reaches the projection', () => {
+  const game = pressGame();
+  dealOut(game);
+  const me = game.byId('me');
+  const bot = game.players.find((p) => p.isBot);
+  me.status = Status.BUSTED;
+  me.total = 40;
+  bot.status = Status.ACTIVE;
+  game.placeRailbird('me', bot.id);
+
+  const back = restore(JSON.parse(JSON.stringify(snapshot(game))));
+  assert.deepEqual(back.byId('me').railbird, me.railbird);
+
+  const room = project(game, { code: 'ABCD' });
+  assert.deepEqual(room.players.me.railbird, {
+    targetId: bot.id,
+    stake: 5,
+    payout: 10,
+  });
+});
+
+// ── ready up: the next game is opt-in ─────────────────────────────────────
+
+test('ready plays, quiet gets benched, and the bench can deal back in', () => {
+  const game = newGame({ seats: { bots: 1 } });
+  addSeat(game, { id: 'dana', name: 'Dana' });
+  game.phase = 'game-over';
+  game.winner = game.byId('me');
+
+  // Toggling: in, then out again.
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(game.byId('dana').ready, true);
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(game.byId('dana').ready, false);
+
+  // Host starts the next game; Dana stayed quiet.
+  assert.equal(applyIntent(game, 'me', { do: 'rematch' }).ok, true);
+  const dana = game.byId('dana');
+  assert.equal(dana.benched, true);
+  assert.equal(dana.status, Status.STAYED, 'benched seats are never dealt to');
+  assert.equal(dana.total, 0, 'new game, fresh slate');
+  assert.equal(game.byId('me').benched, false, "the host's start is their opt-in");
+
+  // From the bench, mid-game: back in from the next round.
+  assert.equal(applyIntent(game, 'dana', { do: 'ready' }).ok, true);
+  assert.equal(dana.benched, false);
+  assert.equal(dana.joinedLate, true);
+});
+
+test('a rematch needs a table worth dealing to, and everyone:true skips the roll call', () => {
+  const duo = createDealtGame({
+    seats: seatsFor({ hostId: 'me', hostName: 'Jack', bots: 0 }),
+    target: 200,
+    seed: 7,
+  });
+  addSeat(duo, { id: 'dana', name: 'Dana' });
+  duo.phase = 'game-over';
+  assert.deepEqual(applyIntent(duo, 'me', { do: 'rematch' }), {
+    ok: false,
+    why: 'need-players',
+  });
+  assert.equal(applyIntent(duo, 'me', { do: 'rematch', everyone: true }).ok, true);
+  assert.equal(duo.byId('dana').benched, false, 'a shared phone deals everyone in');
+});
+
+test('a press from nothing can leave you owing the table', () => {
+  const game = pressGame(13);
+  const player = bettable(game, 0);
+  assert.equal(game.placeBet(player.id, 10), true, 'no funds gate — round one can press');
+  game.deck.push({ kind: 'number', value: 6, id: 'dup-6c' });
+  game.hit();
+  assert.equal(player.status, Status.BUSTED);
+  assert.equal(player.total, -10, 'in the hole, honestly');
+});
+
+test('every hit can carry a fresh press — doubling down is the point', () => {
+  const game = pressGame();
+  const player = bettable(game, 40);
+  assert.equal(game.placeBet(player.id, 5), true);
+  game.deck.push({ kind: 'number', value: 3, id: 'safe-3c' });
+  game.hit();
+  assert.equal(player.bet, null, 'the first press settled');
+
+  // Hand the turn straight back (test-only poke) and press again, bigger.
+  game.needAdvance = false;
+  game.turnIndex = game.players.indexOf(player);
+  assert.equal(game.request().playerId, player.id);
+  assert.equal(game.placeBet(player.id, 10), true, 'a second press on a later card');
 });
